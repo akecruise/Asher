@@ -1,13 +1,13 @@
 'use strict';
 /**
- * เก็บข้อมูลโครงการ ASHER ลงไฟล์ JSON (data/asher-projects.json)
+ * เก็บข้อมูลโครงการลงไฟล์ JSON — ใช้ทั้งฝั่ง ASHER และฝั่งคู่แข่ง (schema เดียวกัน)
  * เขียนแบบ atomic: เขียน .tmp แล้ว rename ทับ กันไฟล์พังตอนไฟดับ/ปิด server กลางคัน
  */
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
-const DATA_FILE = path.join(__dirname, '..', 'data', 'asher-projects.json');
+const DATA_DIR = path.join(__dirname, '..', 'data');
 
 const EMPTY = { version: 1, updatedAt: null, projects: [] };
 
@@ -30,8 +30,6 @@ const NUMERIC_ROOM_FIELDS = new Set([
   'sizeSqm', 'ceilingHeightM', 'priceTHB', 'pricePerSqmTHB', 'units',
   'bedWidthFt', 'usableWidthM'
 ]);
-
-let writeChain = Promise.resolve();
 
 function slugify(value, fallback) {
   const slug = String(value || '')
@@ -116,43 +114,91 @@ function normalizeDb(raw) {
   };
 }
 
-async function read() {
-  try {
-    const text = await fsp.readFile(DATA_FILE, 'utf8');
-    return normalizeDb(JSON.parse(text));
-  } catch (err) {
-    if (err.code === 'ENOENT') return { ...EMPTY };
-    if (err instanceof SyntaxError) {
-      // ไฟล์เสีย: สำรองไว้แล้วเริ่มใหม่ ดีกว่าปล่อยให้ทั้งระบบล่ม
-      await fsp.rename(DATA_FILE, `${DATA_FILE}.corrupt-${Date.now()}`).catch(() => {});
-      return { ...EMPTY };
+function createStore(fileName) {
+  const file = path.join(DATA_DIR, fileName);
+  let writeChain = Promise.resolve();
+
+  async function read() {
+    try {
+      const text = await fsp.readFile(file, 'utf8');
+      return normalizeDb(JSON.parse(text));
+    } catch (err) {
+      if (err.code === 'ENOENT') return { version: 1, updatedAt: null, projects: [] };
+      if (err instanceof SyntaxError) {
+        // ไฟล์เสีย: สำรองไว้แล้วเริ่มใหม่ ดีกว่าปล่อยให้ทั้งระบบล่ม
+        await fsp.rename(file, `${file}.corrupt-${Date.now()}`).catch(() => {});
+        return { version: 1, updatedAt: null, projects: [] };
+      }
+      throw err;
     }
-    throw err;
   }
+
+  function write(db) {
+    // ต่อคิวการเขียนไว้ กันสองรีเควสต์เขียนทับกัน
+    writeChain = writeChain.then(async () => {
+      const next = normalizeDb(db);
+      next.updatedAt = new Date().toISOString();
+      const tmp = `${file}.tmp-${process.pid}`;
+      await fsp.mkdir(DATA_DIR, { recursive: true });
+      await fsp.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      await fsp.rename(tmp, file);
+      return next;
+    }, async () => {
+      throw new Error('write queue broken');
+    });
+    return writeChain;
+  }
+
+  return { file, read, write };
 }
 
-function write(db) {
-  // ต่อคิวการเขียนไว้ กันสองรีเควสต์เขียนทับกัน
-  writeChain = writeChain.then(async () => {
-    const next = normalizeDb(db);
-    next.updatedAt = new Date().toISOString();
-    const tmp = `${DATA_FILE}.tmp-${process.pid}`;
-    await fsp.mkdir(path.dirname(DATA_FILE), { recursive: true });
-    await fsp.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    await fsp.rename(tmp, DATA_FILE);
-    return next;
-  }, async () => {
-    throw new Error('write queue broken');
-  });
-  return writeChain;
+/** เก็บค่าอะไรก็ได้เป็น JSON ก้อนเดียว (ใช้กับบันทึกการตัดสินใจของ weakness engine) */
+function createBlobStore(fileName, fallback) {
+  const file = path.join(DATA_DIR, fileName);
+  let writeChain = Promise.resolve();
+
+  async function read() {
+    try {
+      return JSON.parse(await fsp.readFile(file, 'utf8'));
+    } catch (err) {
+      if (err.code === 'ENOENT' || err instanceof SyntaxError) {
+        return JSON.parse(JSON.stringify(fallback));
+      }
+      throw err;
+    }
+  }
+
+  function write(value) {
+    writeChain = writeChain.then(async () => {
+      const tmp = `${file}.tmp-${process.pid}`;
+      await fsp.mkdir(DATA_DIR, { recursive: true });
+      await fsp.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+      await fsp.rename(tmp, file);
+      return value;
+    }, async () => {
+      throw new Error('write queue broken');
+    });
+    return writeChain;
+  }
+
+  return { file, read, write };
 }
+
+const asherStore = createStore('asher-projects.json');
+const competitorStore = createStore('competitors.json');
 
 module.exports = {
-  DATA_FILE,
+  DATA_DIR,
+  DATA_FILE: asherStore.file,
   PROJECT_FIELDS,
   ROOM_FIELDS,
-  read,
-  write,
+  createStore,
+  createBlobStore,
+  asherStore,
+  competitorStore,
+  // ทางลัดของเดิม ให้ code ที่เรียก store.read()/store.write() ตรง ๆ ยังใช้ได้
+  read: asherStore.read,
+  write: asherStore.write,
   normalizeProject,
   normalizeRoom,
   slugify,

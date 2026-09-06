@@ -258,3 +258,62 @@ table.data td input { padding: 7px 9px; }
 #toast.show { opacity: 1; transform: translateY(0); }
 #toast.ok { border-left-color: var(--good); }
 #toast.err { border-left-color: var(--bad); }
+
+/* ---------------------------- Weakness Engine ---------------------------- */
+
+.weak-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 14px;
+}
+.weak-card.is-dismissed { opacity: 0.5; }
+.weak-card.is-used { border-left: 3px solid var(--accent); }
+
+.weak-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.weak-title { font-size: 16px; font-weight: 700; margin: 0 0 3px; }
+.weak-source { font-size: 12px; color: var(--text-dim); }
+.weak-source a { text-decoration: underline; }
+
+.weak-score { text-align: right; line-height: 1.15; flex-shrink: 0; }
+.weak-score .n { font-size: 28px; font-weight: 800; }
+.weak-score .n.hot { color: var(--bad); }
+.weak-score .n.warm { color: var(--warn); }
+.weak-score .n.cool { color: var(--text-faint); }
+.weak-score .f { font-size: 11px; color: var(--text-faint); }
+
+.weak-body { margin-top: 12px; }
+.weak-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 14px;
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.weak-row .k { color: var(--text-dim); }
+.weak-row.locked .v { color: var(--warn); }
+.weak-row.proven .v { color: #86efac; }
+@media (max-width: 720px) {
+  .weak-row { grid-template-columns: 1fr; gap: 2px; }
+}
+
+.weak-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.weak-actions .spacer { flex: 1; }
+
+.btn.win { background: #0d3a22; border-color: #15613a; color: #4ade80; }
+.btn.lose { background: #3a1616; border-color: #7f1d1d; color: #fca5a5; }
+.btn.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.stat .v.hot { color: var(--bad); }
+.stat .v.warm { color: var(--warn); }
+.stat .v.good { color: var(--good); }

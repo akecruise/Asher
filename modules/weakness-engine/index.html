@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weakness Engine · Asher</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../../shared/asher-theme.css">
+</head>
+<body>
+
+<header class="asher-header">
+  <div class="asher-logo">ASHER<small>MARKETING INTELLIGENCE</small></div>
+  <span id="apiBadge" class="api-badge checking">LOCAL API · กำลังตรวจสอบ</span>
+  <span style="flex:1"></span>
+  <a class="faint" href="../asher-projects/index.html">ใส่ข้อมูลโครงการ ASHER →</a>
+</header>
+
+<div class="wrap">
+  <div class="eyebrow">WEAKNESS ENGINE</div>
+  <h1>จุดอ่อนที่ ASHER ใช้ได้จริง</h1>
+  <p class="lede">
+    ไม่ได้หาแค่จุดอ่อนคู่แข่ง แต่หาจุดที่เขาอ่อน และเรามีของดีกว่าจริง —
+    priority = severity × exploitability โดย exploitability จะถูกล็อกไว้ที่ 2
+    ถ้ายังไม่มีข้อมูลห้อง ASHER มายืนยันว่าเราชนะ
+  </p>
+
+  <div id="blockers"></div>
+
+  <div class="grid cols-4" style="margin-bottom:18px">
+    <div class="stat"><div class="k">ใช้ได้ทันที (แดง)</div><div class="v hot" id="statReady">0</div></div>
+    <div class="stat"><div class="k">น่าสนใจ (เหลือง)</div><div class="v warm" id="statInteresting">0</div></div>
+    <div class="stat"><div class="k">เคยเอาไปใช้จริง</div><div class="v" id="statUsed">0</div></div>
+    <div class="stat"><div class="k">พิสูจน์แล้วว่าใช้ได้</div><div class="v good" id="statWon">0</div></div>
+  </div>
+
+  <div class="row" style="margin-bottom:16px">
+    <button class="btn primary" id="scanBtn">สแกนหาจุดอ่อน</button>
+    <a class="btn" href="../asher-projects/index.html">เปิดหน้าใส่ข้อมูล ASHER →</a>
+    <button class="btn" id="sampleBtn">ใส่ข้อมูลตัวอย่าง</button>
+    <span class="faint" id="scanStatus"></span>
+  </div>
+
+  <div class="row" style="margin-bottom:16px">
+    <label class="faint"><input type="checkbox" id="filterProven"> แสดงเฉพาะที่พิสูจน์แล้ว</label>
+    <label class="faint"><input type="checkbox" id="filterDismissed"> แสดงที่ตัดทิ้งด้วย</label>
+  </div>
+
+  <div id="findings"></div>
+</div>
+
+<div id="toast"></div>
+
+<script src="../../shared/asher-api.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

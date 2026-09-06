@@ -26,8 +26,12 @@ node server/server.js          # หรือ npm start
 | `server/scraper.js` | โหลดหน้าเว็บ แปลง HTML เป็นข้อความ แล้วแกะค่าออกมา |
 | `shared/asher-theme.css` | โทนสีกลางที่ใช้ร่วมกับโมดูลอื่น |
 | `shared/asher-api.js` | ตัวเชื่อม API + สำรองร่างลง `localStorage` เวลา API ล่ม |
+| `server/weakness.js` | กติกาหาจุดอ่อน + คิด severity × exploitability |
 | `modules/asher-projects/` | หน้าใส่ข้อมูล |
-| `data/asher-projects.json` | ข้อมูลจริง (commit ได้ ถ้าอยากให้ทีมเห็นเหมือนกัน) |
+| `modules/weakness-engine/` | หน้าอ้างอิงของ weakness engine (ยกไปต่อในแท็บ `#weakness` เดิมได้) |
+| `data/asher-projects.json` | ข้อมูลฝั่งเรา |
+| `data/competitors.json` | ข้อมูลฝั่งคู่แข่ง (schema เดียวกัน) |
+| `data/weakness-actions.json` | บันทึกว่าเซลส์ใช้มุมไหน ผลเป็นยังไง |
 
 ## API
 
@@ -37,7 +41,12 @@ node server/server.js          # หรือ npm start
 | GET | `/api/asher/projects` | ดึงทุกโครงการ |
 | POST | `/api/asher/projects` | เพิ่มโครงการใหม่ |
 | GET · PUT · PATCH · DELETE | `/api/asher/projects/:id` | อ่าน/แทนที่/แก้บางช่อง/ลบ |
-| GET | `/api/asher/rooms` | ผังห้องทุกโครงการแบบแบน — ให้โมดูลอื่นเรียกไปใช้ |
+| GET | `/api/asher/rooms` | ผังห้องทุกโครงการแบบแบน — weakness engine ใช้ตัวนี้ |
+| GET · POST | `/api/competitors` | คู่แข่งทั้งหมด / เพิ่มคู่แข่ง |
+| GET · PUT · PATCH · DELETE | `/api/competitors/:id` | จัดการคู่แข่งรายโครงการ |
+| GET | `/api/weakness` | สแกนจุดอ่อน คืน findings + summary + blockers |
+| POST | `/api/weakness/actions` | บันทึกการตัดสินใจ คืนผลสแกนชุดใหม่ |
+| POST | `/api/weakness/sample` | ใส่คู่แข่งตัวอย่างไว้ลองระบบ |
 | POST | `/api/scrape` | `{"url": "..."}` หรือ `{"html": "..."}` |
 
 ## การดึงข้อมูลจากเว็บไซต์
@@ -75,6 +84,36 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 พอเปิด server แล้วรีเฟรช จะมีแถบให้กด **ซิงก์ขึ้น Local API** เพื่อเก็บลงไฟล์จริง
 (การดึงข้อมูลจากเว็บไซต์ต้องมี server เท่านั้น เพราะเบราว์เซอร์ยิงข้ามโดเมนเองไม่ได้)
 
+## Weakness Engine
+
+เปิด <http://localhost:8000/modules/weakness-engine/>
+
+```
+priority = severity × exploitability
+```
+
+| ตัวแปร | มาจากไหน |
+| --- | --- |
+| `severity` | ข้อมูลคู่แข่งเทียบมาตรฐานตลาด — รู้ได้โดยไม่ต้องมีข้อมูลเรา |
+| `exploitability` | **ล็อกไว้ที่ 2** จนกว่าห้องของ ASHER ใน `/api/asher/rooms` จะยืนยันว่าเราชนะมิตินั้นจริง |
+
+กติกาที่สแกน (`server/weakness.js`):
+
+| กติกา | เจอเมื่อ | ปลดล็อกด้วย |
+| --- | --- | --- |
+| `room-size` | ห้องเล็กกว่ามาตรฐาน (Studio 26 · 1BR 30 · 2BR 50 · 3BR 75 ตร.ม.) | ห้อง ASHER คลาสเดียวกันที่ใหญ่กว่า |
+| `ceiling-height` | ฝ้าต่ำกว่า 2.70 ม. | ห้อง ASHER ที่ฝ้าสูงกว่า |
+| `price-per-sqm` | ราคาต่อ ตร.ม. สูงกว่าค่ากลางของคู่แข่ง (ต้องมีอย่างน้อย 3 ผัง) | ห้อง ASHER ที่ถูกกว่าต่อ ตร.ม. |
+| `facility-gap` | ไม่มีส่วนกลางหลักที่ตลาดคาดหวัง | โครงการ ASHER ที่มีส่วนกลางนั้น |
+| `unit-density` | ยูนิตต่อชั้นเกิน 20 | โครงการ ASHER ที่ยูนิตต่อชั้นน้อยกว่า |
+
+`exploitability` หลังพิสูจน์ได้จะอยู่ที่ 3–5 ตามขนาดของส่วนต่าง (ยิ่งชนะขาดยิ่งสูง)
+แต่ละ finding คืน `evidence` (หลักฐานฝั่งคู่แข่ง) · `proof` (หลักฐานฝั่งเรา) · `angle` (มุมโจมตี)
+· `openQuestion` (คำถามเปิดที่ให้ลูกค้าคิดเอง) · `doNotSay` (สิ่งที่ห้ามพูด)
+
+การตัดสินใจของเซลส์ (`ใช้มุมนี้` / `ตัดทิ้ง` / `คืนค่า` และผล `ชนะ` / `แพ้` / `ไม่มีผล`)
+เก็บที่ `data/weakness-actions.json` ผูกกับ id ของ finding ที่คงที่ข้ามการสแกน
+
 ## ต่อเข้ากับโมดูลอื่น
 
 เพิ่มลิงก์ในเมนูข้าง ใต้กลุ่ม **DATA & MEASUREMENT**:
@@ -83,12 +122,39 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 <a href="/modules/asher-projects/index.html">ใส่ข้อมูล ASHER</a>
 ```
 
-ให้ weakness engine อ่านห้องของเราไปใช้ปลดล็อก exploitability:
+ต่อแท็บ `#weakness` ในหน้า Competitor Intelligence เดิมเข้ากับ engine — เรียกที่เดียวได้ครบ
+ทั้งการ์ด สถิติ และ blockers ไม่ต้องคำนวณเองในหน้า:
+
+```html
+<link rel="stylesheet" href="/shared/asher-theme.css">   <!-- คลาส .weak-card, .weak-row -->
+<script src="/shared/asher-api.js"></script>
+```
+
+```js
+const data = await AsherAPI.getWeakness();
+
+data.summary;   // { ready, interesting, used, won, locked, dismissed } -> 4 ตัวเลขบนหัวแท็บ
+data.blockers;  // ข้อความในกล่องเหลือง "ต้องแก้ก่อนถึงจะใช้ได้เต็มที่"
+data.findings;  // เรียง priority มาก -> น้อย มาแล้ว
+
+for (const f of data.findings) {
+  f.priority;            // severity x exploitability
+  f.locked;              // true = ยังไม่มีข้อมูลห้อง ASHER มาพิสูจน์
+  f.potentialPriority;   // ตัวเลขที่จะได้ถ้าพิสูจน์ได้ (ใช้ในข้อความ "จะขึ้นเป็น 20")
+  f.evidence; f.proof; f.angle; f.openQuestion; f.doNotSay;
+}
+
+// ปุ่มในการ์ด — ทุกตัวคืนผลสแกนชุดใหม่มาให้ render ต่อได้เลย
+await AsherAPI.setWeaknessAction({ id: f.id, status: 'used' });
+await AsherAPI.setWeaknessAction({ id: f.id, outcome: 'won' });
+await AsherAPI.setWeaknessAction({ id: f.id, reset: true });
+```
+
+ถ้าอยากคิดเองในหน้าเดิม ดึงห้องของเราตรง ๆ ได้ที่:
 
 ```js
 const { rooms } = await fetch('/api/asher/rooms').then((r) => r.json());
-const ourRooms = rooms.filter((room) => room.sizeSqm);
-// ถ้ามีห้องเราที่ขนาดชนะห้องคู่แข่งในหลักฐาน -> ปลด exploitability ออกจากเพดาน 2
+const proven = rooms.filter((room) => room.sizeSqm);
 ```
 
 ถ้าหน้าโมดูลถูกเสิร์ฟคนละพอร์ตกับ API ให้ระบุ base ได้ทาง `?api=http://localhost:8000`

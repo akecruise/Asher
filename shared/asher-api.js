@@ -108,6 +108,33 @@
       return request('/api/scrape', { method: 'POST', body: payload, timeout: 45000 });
     },
 
+    /* ---- คู่แข่ง + weakness engine ---- */
+
+    getCompetitors: function () {
+      return request('/api/competitors');
+    },
+
+    saveCompetitor: function (project) {
+      return request('/api/competitors/' + encodeURIComponent(project.id), {
+        method: 'PUT',
+        body: project
+      });
+    },
+
+    /** จุดอ่อนที่สแกนได้ พร้อมสถานะว่าพิสูจน์ด้วยข้อมูลห้อง ASHER แล้วหรือยัง */
+    getWeakness: function () {
+      return request('/api/weakness');
+    },
+
+    /** บันทึกการตัดสินใจ: {id, status?: new|used|dismissed, outcome?: won|lost|noeffect, reset?} */
+    setWeaknessAction: function (payload) {
+      return request('/api/weakness/actions', { method: 'POST', body: payload });
+    },
+
+    seedSampleCompetitor: function () {
+      return request('/api/weakness/sample', { method: 'POST' });
+    },
+
     /* ---- ร่างที่ค้างอยู่ในเครื่อง (ใช้ตอน API ล่ม) ---- */
 
     saveDraft: function (project) {
