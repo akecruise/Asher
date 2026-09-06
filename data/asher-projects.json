@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "updatedAt": null,
+  "projects": [
+    {
+      "id": "asher-naii",
+      "name": "ASHER Naii",
+      "brand": "ASHER",
+      "location": "อินทามระ 41",
+      "website": "",
+      "developer": "",
+      "status": "selling",
+      "priceStartTHB": null,
+      "pricePerSqmTHB": null,
+      "unitsTotal": null,
+      "floors": null,
+      "completionYear": null,
+      "notes": "",
+      "facilities": [],
+      "rooms": [],
+      "promotions": [],
+      "sources": []
+    },
+    {
+      "id": "asher-vibe",
+      "name": "ASHER Vibe",
+      "brand": "ASHER",
+      "location": "",
+      "website": "",
+      "developer": "",
+      "status": "selling",
+      "priceStartTHB": null,
+      "pricePerSqmTHB": null,
+      "unitsTotal": null,
+      "floors": null,
+      "completionYear": null,
+      "notes": "",
+      "facilities": [],
+      "rooms": [],
+      "promotions": [],
+      "sources": []
+    }
+  ]
+}

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ใส่ข้อมูลโครงการ ASHER · Asher</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../../shared/asher-theme.css">
+<style>
+  .rooms-scroll { overflow-x: auto; }
+  .rooms-scroll table { min-width: 940px; }
+  .scrape-row {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 10px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .scrape-row:last-child { border-bottom: none; }
+  .scrape-row .label { font-size: 12px; color: var(--text-dim); }
+  .scrape-row .value { font-weight: 600; word-break: break-word; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .savebar {
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(180deg, rgba(10,17,32,0) 0%, var(--bg) 34%);
+    padding: 16px 0 22px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .dirty-flag { color: var(--warn); font-size: 12px; }
+  .checklist { list-style: none; padding: 0; margin: 12px 0 0; font-size: 13px; }
+  .checklist li { padding: 3px 0; color: var(--text-dim); }
+  .checklist li.done { color: var(--text); }
+  .checklist li b { display: inline-block; width: 18px; }
+  .checklist li.done b { color: var(--good); }
+  .checklist li:not(.done) b { color: var(--text-faint); }
+</style>
+</head>
+<body>
+
+<header class="asher-header">
+  <div class="asher-logo">ASHER<small>MARKETING INTELLIGENCE</small></div>
+  <span id="apiBadge" class="api-badge checking">LOCAL API · กำลังตรวจสอบ</span>
+  <span style="flex:1"></span>
+  <a class="faint" href="../competitor-intelligence/index.html#weakness">← กลับไป Competitor Intelligence</a>
+</header>
+
+<div class="wrap">
+  <div class="eyebrow">MODULE 09 · ASHER PROJECT DATA</div>
+  <h1>ใส่ข้อมูลโครงการ ASHER</h1>
+  <p class="lede">
+    กรอกข้อมูลจริงของ ASHER Naii และ ASHER Vibe เพื่อให้ weakness engine พิสูจน์ได้ว่า
+    &ldquo;เราดีกว่าจริง&rdquo; — ถ้าไม่มีข้อมูลห้องของเราในระบบ exploitability จะถูกล็อกไว้ที่ 2 ตลอด
+    ใส่ลิงก์เว็บไซต์โครงการแล้วกดดึงข้อมูล ระบบจะเดาค่าให้ก่อน แล้วค่อยยืนยันทีละช่อง
+  </p>
+
+  <div id="draftNotice" class="callout" hidden></div>
+
+  <div class="tabs" id="projectTabs"></div>
+
+  <!-- ความครบถ้วน -->
+  <div class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>ความครบถ้วนของข้อมูล</h2>
+        <div class="faint" id="completenessSub">—</div>
+      </div>
+      <div style="min-width:180px">
+        <div class="meter"><span id="completenessBar" style="width:0%"></span></div>
+        <div class="faint" style="text-align:right;margin-top:4px" id="completenessPct">0%</div>
+      </div>
+    </div>
+    <div id="engineStatus"></div>
+    <ul class="checklist" id="checklist"></ul>
+  </div>
+
+  <!-- ดึงข้อมูลจากเว็บไซต์ -->
+  <div class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>ดึงข้อมูลจากเว็บไซต์ (Scraping)</h2>
+        <div class="faint">ระบบจะอ่านหน้าเว็บแล้วเดาค่าให้ พร้อมหลักฐานว่าเจอจากข้อความไหน — ไม่เขียนทับข้อมูลเดิมจนกว่าจะกดยืนยัน</div>
+      </div>
+    </div>
+
+    <label class="field" style="margin-bottom:12px">
+      <span>เว็บไซต์โครงการ <span class="hint">— ถ้าใส่ลิงก์หน้า &ldquo;ห้องพัก / Room Type&rdquo; ตรง ๆ จะได้ผังห้องครบกว่า</span></span>
+      <input type="url" id="websiteInput" placeholder="https://www.example.com/asher-naii/rooms" autocomplete="off">
+    </label>
+
+    <div class="row">
+      <button class="btn primary" id="scrapeBtn">ดึงข้อมูลจากเว็บไซต์</button>
+      <button class="btn" id="pasteToggle">วาง HTML เอง</button>
+      <span class="faint" id="scrapeStatus"></span>
+    </div>
+
+    <div id="pasteBox" hidden style="margin-top:14px">
+      <label class="field">
+        <span>วาง HTML หรือข้อความจากหน้าเว็บ <span class="hint">— ใช้กับเว็บที่ render ด้วย JavaScript (เปิดหน้าเว็บ → คลิกขวา → View Page Source → copy มาวาง)</span></span>
+        <textarea id="pasteInput" rows="6" placeholder="&lt;html&gt;…"></textarea>
+      </label>
+      <button class="btn" id="parsePasteBtn" style="margin-top:8px">แกะข้อมูลจากที่วาง</button>
+    </div>
+
+    <div id="scrapeResult" hidden style="margin-top:18px"></div>
+  </div>
+
+  <!-- ข้อมูลโครงการ -->
+  <div class="panel">
+    <h2>ข้อมูลโครงการ</h2>
+    <h3>ข้อมูลหลักที่ใช้เทียบกับคู่แข่ง</h3>
+    <div class="grid cols-3">
+      <label class="field"><span>ชื่อโครงการ</span><input type="text" data-field="name"></label>
+      <label class="field"><span>ทำเล</span><input type="text" data-field="location" placeholder="อินทามระ 41"></label>
+      <label class="field"><span>ผู้พัฒนา</span><input type="text" data-field="developer"></label>
+      <label class="field"><span>ราคาเริ่มต้น (บาท)</span><input type="number" data-field="priceStartTHB" step="10000" placeholder="3950000"></label>
+      <label class="field"><span>ราคาต่อ ตร.ม. (บาท)</span><input type="number" data-field="pricePerSqmTHB" step="1000" placeholder="120000"></label>
+      <label class="field"><span>จำนวนยูนิต</span><input type="number" data-field="unitsTotal" step="1"></label>
+      <label class="field"><span>จำนวนชั้น</span><input type="number" data-field="floors" step="1"></label>
+      <label class="field"><span>ปีที่แล้วเสร็จ (ค.ศ.)</span><input type="number" data-field="completionYear" step="1" placeholder="2026"></label>
+      <label class="field"><span>สถานะ</span>
+        <select data-field="status">
+          <option value="preview">Pre-sale / Preview</option>
+          <option value="selling">กำลังขาย</option>
+          <option value="ready">พร้อมอยู่</option>
+          <option value="soldout">ปิดการขาย</option>
+        </select>
+      </label>
+    </div>
+    <label class="field" style="margin-top:14px">
+      <span>หมายเหตุ / จุดขายที่ใช้สู้คู่แข่ง</span>
+      <textarea data-field="notes" rows="3" placeholder="เช่น ให้พื้นที่ใช้สอยมากกว่าในงบใกล้กัน วางเฟอร์ครบโดยไม่ต้องตัดของ"></textarea>
+    </label>
+  </div>
+
+  <!-- ผังห้อง -->
+  <div class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>ผังห้อง</h2>
+        <div class="faint">ส่วนที่สำคัญที่สุด — ขนาด ตร.ม. จริงของเราคือหลักฐานที่ปลดล็อก exploitability ของทุกจุดอ่อน</div>
+      </div>
+      <button class="btn small" id="addRoomBtn">+ เพิ่มผังห้อง</button>
+    </div>
+    <div class="rooms-scroll">
+      <table class="data">
+        <thead>
+          <tr>
+            <th style="width:180px">ผังห้อง</th>
+            <th style="width:110px">ขนาด (ตร.ม.)</th>
+            <th style="width:105px">ฝ้าสูง (ม.)</th>
+            <th style="width:130px">ราคา (บาท)</th>
+            <th style="width:120px">บาท/ตร.ม.</th>
+            <th style="width:90px">ยูนิต</th>
+            <th style="width:120px">เตียงที่วางได้ (ฟุต)</th>
+            <th>หมายเหตุ</th>
+            <th style="width:40px"></th>
+          </tr>
+        </thead>
+        <tbody id="roomsBody"></tbody>
+      </table>
+    </div>
+    <div class="faint" id="roomsEmpty" style="margin-top:10px"></div>
+  </div>
+
+  <!-- สิ่งอำนวยความสะดวก -->
+  <div class="panel">
+    <h2>สิ่งอำนวยความสะดวก</h2>
+    <h3>ใช้เทียบส่วนกลางกับคู่แข่ง</h3>
+    <div class="chips" id="facilityChips" style="margin-bottom:12px"></div>
+    <div class="row">
+      <input type="text" id="facilityInput" placeholder="เช่น สระว่ายน้ำ" style="max-width:280px">
+      <button class="btn small" id="addFacilityBtn">เพิ่ม</button>
+    </div>
+  </div>
+
+  <!-- โปรโมชั่น -->
+  <div class="panel">
+    <h2>โปรโมชั่นปัจจุบัน</h2>
+    <h3>ใช้เทียบกับ Price &amp; Promotion ของคู่แข่ง</h3>
+    <div class="chips" id="promoChips" style="margin-bottom:12px"></div>
+    <div class="row">
+      <input type="text" id="promoInput" placeholder="เช่น ฟรีค่าโอน + เฟอร์ครบ" style="max-width:340px">
+      <button class="btn small" id="addPromoBtn">เพิ่ม</button>
+    </div>
+  </div>
+
+  <div id="sourcesPanel"></div>
+
+  <div class="savebar">
+    <button class="btn primary" id="saveBtn">บันทึกข้อมูล</button>
+    <button class="btn" id="reloadBtn">โหลดค่าที่บันทึกไว้ใหม่</button>
+    <button class="btn danger" id="deleteBtn">ลบโครงการนี้</button>
+    <span class="dirty-flag" id="dirtyFlag" hidden>● มีการแก้ไขที่ยังไม่ได้บันทึก</span>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="../../shared/asher-api.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
