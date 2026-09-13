@@ -11,6 +11,8 @@
  *
  * ต้องรันบนเครื่อง/เซิร์ฟเวอร์เดียวกับที่เก็บข้อมูล และตั้ง ASHER_DATA_DIR ให้ตรงกับตอนรัน server
  */
+require('../server/env').loadEnv();
+
 const users = require('../server/users');
 
 const USAGE = `

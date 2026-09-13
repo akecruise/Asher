@@ -294,7 +294,72 @@ async function main() {
     fs.rmSync(USERS_DIR, { recursive: true, force: true });
   }
 
-  /* ---------- 5. โหมด localhost ไม่มีรหัสผ่าน ต้องใช้ได้เหมือนเดิม ---------- */
+  /* ---------- 5. อยู่หลัง proxy: bot ต้องหลบ rate limit ไม่ได้ ---------- */
+  const PPORT = 8916;
+  const pbase = `http://127.0.0.1:${PPORT}`;
+  const proxied = await startServer({
+    PORT: String(PPORT), HOST: '127.0.0.1',
+    ASHER_PASSWORD: PASSWORD, ASHER_TRUST_PROXY: '1',
+    ASHER_DATA_DIR: DATA_DIR
+  });
+
+  try {
+    const robots = await req(pbase, '/robots.txt');
+    check('มี robots.txt กัน search engine เก็บ index',
+      robots.status === 200 && /Disallow: \/$/m.test(robots.body), robots.body);
+    check('ทุกหน้าส่ง header noindex',
+      String(robots.headers.get('x-robots-tag') || '').includes('noindex'),
+      String(robots.headers.get('x-robots-tag')));
+
+    /**
+     * จำลอง bot ที่ปลอม X-Forwarded-For สุ่มไปเรื่อย ๆ
+     * proxy จริงจะต่อ IP จริงไว้ท้ายสุดเสมอ — ตัวนับต้องยึดตัวท้าย ไม่ใช่ตัวที่ bot ใส่มา
+     */
+    let blocked = 0;
+    for (let i = 0; i < 14; i += 1) {
+      const attempt = await req(pbase, '/api/session', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': `10.9.9.${i}, 203.0.113.9`
+        },
+        body: JSON.stringify({ password: `bot-guess-${i}` })
+      });
+      if (attempt.status === 429) blocked += 1;
+    }
+    check('ปลอม X-Forwarded-For หลบ rate limit ไม่ได้', blocked > 0, `429 ${blocked} ครั้ง`);
+
+    // คนละ IP จริง ต้องมีโควตาของตัวเอง ไม่โดนลูกหลงจากคนอื่น
+    const other = await req(pbase, '/api/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': ' 8.8.8.8, 203.0.113.77' },
+      body: JSON.stringify({ password: PASSWORD })
+    });
+    check('IP จริงคนละตัว ไม่โดนลูกหลง rate limit', other.status === 200, `ได้ ${other.status}`);
+  } finally {
+    proxied.kill();
+  }
+
+  /* ---------- 6. ตัวโหลด .env ---------- */
+  const envFile = path.join(DATA_DIR, 'sample.env');
+  fs.writeFileSync(envFile, [
+    '# ความเห็น',
+    '',
+    'ASHER_TEST_PLAIN=hello',
+    'ASHER_TEST_QUOTED="มีช่องว่าง ในนี้"',
+    'ASHER_TEST_EXISTING=จาก-ไฟล์',
+    'ไม่ใช่บรรทัดที่ถูกต้อง'
+  ].join('\n'));
+  process.env.ASHER_TEST_EXISTING = 'จาก-environment';
+  const loaded = require(path.join(ROOT, 'server/env')).loadEnv(envFile);
+  check('.env: อ่านค่าธรรมดาและค่าที่มีเครื่องหมายคำพูดได้',
+    loaded === 2 && process.env.ASHER_TEST_PLAIN === 'hello' &&
+    process.env.ASHER_TEST_QUOTED === 'มีช่องว่าง ในนี้',
+    `loaded=${loaded} ${process.env.ASHER_TEST_QUOTED}`);
+  check('.env: ค่าที่ตั้งไว้ใน environment จริงชนะค่าในไฟล์',
+    process.env.ASHER_TEST_EXISTING === 'จาก-environment', process.env.ASHER_TEST_EXISTING);
+
+  /* ---------- 7. โหมด localhost ไม่มีรหัสผ่าน ต้องใช้ได้เหมือนเดิม ---------- */
   const local = await startServer({
     PORT: '8914',
     HOST: '127.0.0.1',

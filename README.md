@@ -132,7 +132,9 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 | CSRF | ทุกคำขอที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเอง |
 | ไฟล์ static | เสิร์ฟแค่ `/modules/` กับ `/shared/` — `data/`, `server/`, `.git/` เข้าไม่ถึง |
 | rate limit | อ่าน 240 / เขียน 60 / scrape 12 ต่อนาที/IP, login ผิดได้ 10 ครั้ง/15 นาที/IP และ 20 ครั้ง/15 นาที/บัญชี |
-| header | CSP, `X-Frame-Options: DENY`, `nosniff`, HSTS (เมื่อเป็น HTTPS) |
+| header | CSP, `X-Frame-Options: DENY`, `nosniff`, HSTS (เมื่อเป็น HTTPS), `X-Robots-Tag: noindex` |
+| bot | `robots.txt` ปิดทั้งเว็บ · login ที่ล้มเหลวขึ้น log พร้อม IP · ปลอม `X-Forwarded-For` หลบ rate limit ไม่ได้ |
+| ตั้งค่า | อ่าน `.env` ที่รากโปรเจกต์ให้เอง (ไม่ต้องลง dotenv) — ค่าใน environment จริงชนะเสมอ |
 | ที่เก็บข้อมูล | `ASHER_DATA_DIR` ชี้ออกนอกโฟลเดอร์เว็บได้ กัน deploy ทับแล้วข้อมูลหาย |
 
 ตัวแปรทั้งหมดดูที่ [.env.example](.env.example) — ทดสอบว่ายังปิดสนิทด้วย `npm test`

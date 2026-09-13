@@ -65,7 +65,8 @@ ASHER_DATA_DIR=~/asher-data npm run user -- add aplusmkteam@gmail.com
 
 ### 4. ตั้งค่า environment variables
 
-ใน hPanel → **Advanced → Node.js → Environment variables** (หรือไฟล์ `.env` บน VPS)
+ใน hPanel → **Advanced → Node.js → Environment variables** หรือวางไฟล์ `.env` ไว้ที่รากโปรเจกต์
+(server อ่าน `.env` ให้เอง ไม่ต้องลง dotenv — สั่ง `chmod 600 .env` ด้วย)
 
 ```
 ASHER_DATA_DIR=/home/USERNAME/asher-data
@@ -96,6 +97,39 @@ https://โดเมนของคุณ/.git/config                 -> 404
 ```bash
 npm test
 ```
+
+## พอร์ต และเรื่อง bot ยิง
+
+**อย่าเปิดพอร์ต Node ออกอินเทอร์เน็ตตรง ๆ** ให้ Node ฟังที่ `127.0.0.1` แล้วให้ Hostinger/Nginx
+ทำ TLS แล้ว proxy เข้ามาที่พอร์ตนั้น — ข้างนอกเห็นแค่ 443 (กับ 80 ที่ redirect ไป 443)
+
+- บน Node.js hosting ของ hPanel: เขาจัดการให้อยู่แล้ว ไม่ต้องเปิดพอร์ตเอง
+- บน VPS: `ufw allow 22`, `ufw allow 80`, `ufw allow 443` แล้ว **ห้าม** allow 8000
+  ถ้าจำเป็นต้องให้ Node ฟัง `0.0.0.0` (บางแพลตฟอร์มบังคับ) ไฟร์วอลล์ต้องปิดพอร์ตนั้นจากข้างนอกให้ได้
+- **ไม่ต้องใช้ tunnel** (ngrok / cloudflared) ตอน deploy จริง เพราะมีโดเมนกับ TLS อยู่แล้ว
+  จะใช้ก็ตอนอยากโชว์เครื่องตัวเองให้คนนอกดูชั่วคราวเท่านั้น — และตอนนั้นต้องสร้างผู้ใช้ก่อนเสมอ
+  (tunnel = เปิด localhost ออกเน็ตจริง ๆ bot สแกนเจอได้เหมือนกัน)
+
+### bot จะยิงแน่นอน — เตรียมรับไว้แล้ว
+
+เว็บที่มีโดเมนจริงจะโดน bot สแกนภายในไม่กี่ชั่วโมง โดยไม่ต้องมีใครบอกลิงก์
+ลองยิงแบบที่ bot ทำจริงแล้ว ผลเป็นแบบนี้:
+
+| bot ยิงอะไร | ได้อะไรกลับ |
+|---|---|
+| `/.env`, `/.git/config`, `/.ssh/id_rsa`, `/backup.zip` | 404 |
+| `/wp-login.php`, `/wp-admin/`, `/phpmyadmin`, `/admin` | 404 |
+| `/data/*.json`, `/server/*.js`, `/package.json` | 404 |
+| `/..%2f..%2fetc%2fpasswd` และ path traversal แบบอื่น | 404 |
+| `/api/...` ทุกเส้น | 401 จนกว่าจะ login |
+| เดารหัสผ่านรัว ๆ | 429 หลังผิด 10 ครั้งใน 15 นาที (นับต่อบัญชีอีก 20 ครั้ง) |
+| ปลอม `X-Forwarded-For` เพื่อหลบ rate limit | ไม่ได้ผล — ตัวนับยึด IP ที่ proxy ต่อท้ายไว้ |
+| Googlebot | `robots.txt` + header `X-Robots-Tag: noindex` ทั้งเว็บ |
+
+การ login ที่ล้มเหลวจะขึ้น log ฝั่ง server พร้อม IP — เข้าไปดูได้ว่ามีคนพยายามเดารหัสไหม
+
+ถ้าตั้ง `ASHER_TRUST_PROXY=1` **ต้องตั้ง `ASHER_PROXY_HOPS` ให้ตรงกับจำนวน proxy จริง**
+(Hostinger/Nginx ชั้นเดียว = 1, มี Cloudflare คั่นด้วย = 2) ตั้งเกินจริงเมื่อไหร่ bot ปลอม header หลบได้
 
 ## บน VPS: รันเป็น service
 

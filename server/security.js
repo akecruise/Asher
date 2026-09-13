@@ -60,6 +60,8 @@ const SESSION_SECRET = process.env.ASHER_SESSION_SECRET
   : crypto.createHash('sha256').update(`asher-session|${PASSWORD}|${TOKEN}`).digest();
 
 const TRUST_PROXY = flag('ASHER_TRUST_PROXY', false);
+/** มี proxy กี่ชั้นหน้า Node (Hostinger/Nginx = 1, +Cloudflare = 2) */
+const PROXY_HOPS = Math.max(1, Math.min(Number(process.env.ASHER_PROXY_HOPS || 1), 5));
 const ALLOW_INSECURE = flag('ASHER_ALLOW_INSECURE', false);
 const SCRAPE_ENABLED = flag('ASHER_ENABLE_SCRAPE', true);
 
@@ -328,6 +330,7 @@ function securityHeaders(req) {
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
     'referrer-policy': 'no-referrer',
+    'x-robots-tag': 'noindex, nofollow, noarchive',
     'cross-origin-opener-policy': 'same-origin',
     'permissions-policy': 'geolocation=(), microphone=(), camera=(), interest-cohort=()',
     'content-security-policy': CSP
@@ -343,10 +346,19 @@ function securityHeaders(req) {
 const buckets = new Map();
 const MAX_BUCKETS = 5000;
 
+/**
+ * IP ของคนที่ยิงเข้ามา
+ *
+ * X-Forwarded-For เป็นรายการที่ต่อกันไปเรื่อย ๆ ฝั่งซ้ายคือค่าที่ "ผู้ยิงใส่มาเอง"
+ * ปลอมได้ทั้งหมด ถ้าอ่านตัวซ้ายสุดแบบตรงไปตรงมา bot จะสุ่ม header หลบ rate limit ได้ฟรี
+ * ตัวที่เชื่อได้คือตัวที่ proxy ของเราต่อท้ายไว้ — เลยนับจากขวาตามจำนวน proxy จริง
+ * (Hostinger/Nginx ชั้นเดียว = 1, มี Cloudflare คั่นอีกชั้น = 2)
+ */
 function clientIp(req) {
   if (TRUST_PROXY) {
-    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    if (forwarded) return forwarded;
+    const chain = String(req.headers['x-forwarded-for'] || '')
+      .split(',').map((value) => value.trim()).filter(Boolean);
+    if (chain.length) return chain[Math.max(0, chain.length - PROXY_HOPS)];
     const real = String(req.headers['x-real-ip'] || '').trim();
     if (real) return real;
   }
@@ -390,6 +402,7 @@ module.exports = {
   SESSION_COOKIE,
   SESSION_HOURS,
   ALLOWED_ORIGINS,
+  PROXY_HOPS,
   assertSafeConfig,
   authMode,
   authRequired,

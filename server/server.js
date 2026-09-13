@@ -10,6 +10,8 @@
  *
  * ไม่มี dependency ภายนอก ใช้ Node 18+ (ต้องมี global fetch)
  */
+require('./env').loadEnv(); // ต้องมาก่อน module อื่นที่อ่าน process.env
+
 const http = require('http');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -248,6 +250,8 @@ async function handleSession(req, res) {
 
     const identity = security.login(email, body.password);
     if (!identity) {
+      // จด log ไว้ดูว่ามีใครพยายามเดารหัสไหม (ไม่จดรหัสที่ลองแน่นอน)
+      console.warn(`[asher] login ล้มเหลว ${email || '(ไม่ระบุอีเมล)'} จาก ${security.clientIp(req)}`);
       // ข้อความเดียวกันทั้งกรณีอีเมลผิดและรหัสผิด จะได้ไม่บอกว่าอีเมลไหนมีในระบบ
       throw scraper.httpError(401, security.authMode() === 'users'
         ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
@@ -425,6 +429,17 @@ async function handleStatic(req, res, url) {
     pathname = decodeURIComponent(url.pathname);
   } catch {
     return notFound(res);
+  }
+
+  // บอก search engine ไม่ให้เก็บ index ทั้งเว็บ — ระบบนี้ไม่ได้มีไว้ให้คนทั่วไปเจอ
+  if (pathname === '/robots.txt') {
+    const body = 'User-agent: *\nDisallow: /\n';
+    res.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'public, max-age=86400'
+    });
+    return res.end(req.method === 'HEAD' ? undefined : body);
   }
 
   if (pathname === '/' || pathname === '/index.html') return redirect(res, HOME_PATH);
