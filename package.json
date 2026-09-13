@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server/server.js",
     "dev": "node --watch server/server.js",
-    "test": "node test/security.test.js"
+    "test": "node test/security.test.js",
+    "user": "node bin/asher-user.js"
   },
   "engines": { "node": ">=18" }
 }

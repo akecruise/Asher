@@ -45,6 +45,10 @@
       <div class="login-error" id="error" role="alert"></div>
 
       <form id="form" autocomplete="on">
+        <div id="emailRow" hidden>
+          <label for="email">อีเมล</label>
+          <input type="email" id="email" name="email" autocomplete="username" autocapitalize="off" spellcheck="false">
+        </div>
         <label for="password">รหัสผ่าน</label>
         <input type="password" id="password" name="password" autocomplete="current-password" required autofocus>
         <button type="submit" class="btn primary" id="submit">เข้าสู่ระบบ</button>

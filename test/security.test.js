@@ -5,7 +5,7 @@
  *
  * ครอบ: fail-closed ตอนบูต, auth, CSRF, CORS, rate limit, ไฟล์ที่ห้ามเสิร์ฟ, SSRF
  */
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -185,7 +185,116 @@ async function main() {
     server.kill();
   }
 
-  /* ---------- 4. โหมด localhost ไม่มีรหัสผ่าน ต้องใช้ได้เหมือนเดิม ---------- */
+  /* ---------- 4. โหมดหลายผู้ใช้ (users.json) ---------- */
+  const USERS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'asher-users-'));
+  const cliEnv = { ...process.env, ASHER_DATA_DIR: USERS_DIR };
+  const cli = (...args) => spawnSync(process.execPath, [path.join(ROOT, 'bin/asher-user.js'), ...args],
+    { env: cliEnv, encoding: 'utf8' });
+
+  const OWNER = 'owner@example.com';
+  const MATE = 'teammate@example.com';
+  const OWNER_PW = 'owner-password-1';
+  const MATE_PW = 'teammate-password-1';
+
+  const added = cli('add', OWNER, '--password', OWNER_PW);
+  check('CLI เพิ่มผู้ใช้ได้', added.status === 0 && added.stdout.includes(OWNER), added.stdout + added.stderr);
+  cli('add', MATE, '--password', MATE_PW);
+
+  const dup = cli('add', OWNER, '--password', OWNER_PW);
+  check('เพิ่มอีเมลซ้ำ -> error', dup.status === 1 && /อยู่แล้ว/.test(dup.stderr), dup.stderr);
+
+  const short = cli('add', 'x@example.com', '--password', 'sh0rt');
+  check('รหัสผ่านสั้น -> error', short.status === 1 && /อย่างน้อย/.test(short.stderr), short.stderr);
+
+  const listed = cli('list');
+  check('CLI list เห็นทั้งสองคน',
+    listed.stdout.includes(OWNER) && listed.stdout.includes(MATE), listed.stdout);
+
+  const usersFile = path.join(USERS_DIR, 'users.json');
+  const raw = fs.readFileSync(usersFile, 'utf8');
+  check('ไฟล์ผู้ใช้ไม่มีรหัสผ่านจริง เก็บเป็น scrypt hash',
+    !raw.includes(OWNER_PW) && !raw.includes(MATE_PW) && raw.includes('scrypt$'), raw.slice(0, 120));
+  check('ไฟล์ผู้ใช้เป็น 0600', (fs.statSync(usersFile).mode & 0o777) === 0o600,
+    (fs.statSync(usersFile).mode & 0o777).toString(8));
+
+  // มีผู้ใช้แล้ว bind สาธารณะได้โดยไม่ต้องตั้ง ASHER_PASSWORD
+  const UPORT = 8915;
+  const ubase = `http://127.0.0.1:${UPORT}`;
+  const userServer = await startServer({
+    PORT: String(UPORT), HOST: '0.0.0.0', ASHER_DATA_DIR: USERS_DIR
+  });
+
+  try {
+    const mode = JSON.parse((await req(ubase, '/api/session')).body);
+    check('มี users.json -> โหมด users และยอม bind 0.0.0.0',
+      mode.mode === 'users' && mode.authRequired === true, JSON.stringify(mode));
+
+    const noEmail = await req(ubase, '/api/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: OWNER_PW })
+    });
+    check('โหมด users: ใส่แต่รหัสผ่านไม่พอ -> 401', noEmail.status === 401, `ได้ ${noEmail.status}`);
+
+    const unknown = await req(ubase, '/api/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'nobody@example.com', password: OWNER_PW })
+    });
+    check('อีเมลที่ไม่มีในระบบ -> 401', unknown.status === 401, `ได้ ${unknown.status}`);
+
+    const crossed = await req(ubase, '/api/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: MATE, password: OWNER_PW })
+    });
+    check('เอารหัสของอีกคนมาใช้ -> 401', crossed.status === 401, `ได้ ${crossed.status}`);
+
+    const mateLogin = await req(ubase, '/api/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: MATE.toUpperCase(), password: MATE_PW })
+    });
+    const mateCookie = (mateLogin.headers.get('set-cookie') || '').split(';')[0];
+    check('login ด้วยอีเมล (พิมพ์ใหญ่ก็ได้) -> 200',
+      mateLogin.status === 200 && JSON.parse(mateLogin.body).user === MATE, mateLogin.body);
+
+    const who = await req(ubase, '/api/session', { headers: { cookie: mateCookie } });
+    check('session บอกว่าใครกำลังใช้อยู่',
+      JSON.parse(who.body).user === MATE, who.body);
+
+    const created = await req(ubase, '/api/asher/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: mateCookie },
+      body: JSON.stringify({ name: 'ทดสอบสองคน' })
+    });
+    check('บันทึกโครงการแล้วจดว่าใครแก้',
+      created.status === 201 && JSON.parse(created.body).project.updatedBy === MATE, created.body);
+
+    // เปลี่ยนรหัสผ่านของอีกคน -> session เดิมต้องตายทันที
+    cli('passwd', MATE, '--password', 'teammate-password-2');
+    const afterPasswd = await req(ubase, '/api/asher/projects', { headers: { cookie: mateCookie } });
+    check('เปลี่ยนรหัสผ่าน -> session เดิมใช้ไม่ได้', afterPasswd.status === 401, `ได้ ${afterPasswd.status}`);
+
+    const relogin = await req(ubase, '/api/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: MATE, password: 'teammate-password-2' })
+    });
+    const newCookie = (relogin.headers.get('set-cookie') || '').split(';')[0];
+    check('login ด้วยรหัสใหม่ได้', relogin.status === 200, `ได้ ${relogin.status}`);
+
+    // ลบผู้ใช้ -> session ต้องตายทันทีเช่นกัน
+    cli('remove', MATE);
+    const afterRemove = await req(ubase, '/api/asher/projects', { headers: { cookie: newCookie } });
+    check('ลบผู้ใช้ -> session ตายทันที', afterRemove.status === 401, `ได้ ${afterRemove.status}`);
+
+    const ownerLogin = await req(ubase, '/api/session', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: OWNER, password: OWNER_PW })
+    });
+    check('เจ้าของยังเข้าได้ตามปกติ', ownerLogin.status === 200, `ได้ ${ownerLogin.status}`);
+  } finally {
+    userServer.kill();
+    fs.rmSync(USERS_DIR, { recursive: true, force: true });
+  }
+
+  /* ---------- 5. โหมด localhost ไม่มีรหัสผ่าน ต้องใช้ได้เหมือนเดิม ---------- */
   const local = await startServer({
     PORT: '8914',
     HOST: '127.0.0.1',

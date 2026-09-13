@@ -19,6 +19,7 @@ const store = require('./store');
 const scraper = require('./scraper');
 const weakness = require('./weakness');
 const security = require('./security');
+const users = require('./users');
 
 const actionStore = store.createBlobStore('weakness-actions.json', { version: 1, items: {} });
 
@@ -51,6 +52,8 @@ const LIMIT_READ = { limit: 240, windowMs: 60 * 1000 };
 const LIMIT_WRITE = { limit: 60, windowMs: 60 * 1000 };
 const LIMIT_SCRAPE = { limit: 12, windowMs: 60 * 1000 };
 const LIMIT_LOGIN = { limit: 10, windowMs: 15 * 60 * 1000 };
+/** กันคนกระจาย IP มาเดารหัสของบัญชีเดียว — นับแยกตามอีเมล */
+const LIMIT_LOGIN_ACCOUNT = { limit: 20, windowMs: 15 * 60 * 1000 };
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -118,7 +121,10 @@ function readBody(req, maxBytes) {
 }
 
 function enforceLimit(req, rule, suffix) {
-  const key = `${suffix}:${security.clientIp(req)}`;
+  return enforceLimitKey(`${suffix}:${security.clientIp(req)}`, rule);
+}
+
+function enforceLimitKey(key, rule) {
   const result = security.rateLimit(key, rule.limit, rule.windowMs);
   if (!result.ok) {
     const err = scraper.httpError(429, 'ส่งคำขอถี่เกินไป ลองใหม่อีกครั้งในอีกสักครู่');
@@ -131,7 +137,14 @@ function enforceLimit(req, rule, suffix) {
 /* ------------------------------ API ------------------------------ */
 
 /** CRUD ของคอลเลกชันโครงการ — ใช้ร่วมกันทั้งฝั่ง ASHER และฝั่งคู่แข่ง */
-async function handleProjectCollection(req, res, projectStore, id) {
+async function handleProjectCollection(req, res, projectStore, id, identity) {
+  /** ประทับว่าใครแก้ล่าสุด — มีความหมายตอนใช้กันหลายคน */
+  const stamp = (raw) => ({
+    ...raw,
+    updatedBy: identity ? identity.id : '',
+    updatedAt: new Date().toISOString()
+  });
+
   if (!id && req.method === 'GET') {
     const db = await projectStore.read();
     sendJson(res, 200, { ok: true, ...db });
@@ -144,7 +157,7 @@ async function handleProjectCollection(req, res, projectStore, id) {
       throw scraper.httpError(400, 'ต้องมีชื่อโครงการ');
     }
     const db = await projectStore.read();
-    const project = store.normalizeProject(body, db.projects.length);
+    const project = store.normalizeProject(stamp(body), db.projects.length);
     if (db.projects.some((p) => p.id === project.id)) {
       throw scraper.httpError(409, `มีโครงการ id "${project.id}" อยู่แล้ว`);
     }
@@ -172,7 +185,7 @@ async function handleProjectCollection(req, res, projectStore, id) {
     const index = db.projects.findIndex((p) => p.id === id);
     if (index === -1) throw scraper.httpError(404, `ไม่พบโครงการ "${id}"`);
     const merged = req.method === 'PATCH' ? { ...db.projects[index], ...body } : body;
-    db.projects[index] = store.normalizeProject({ ...merged, id }, index);
+    db.projects[index] = store.normalizeProject(stamp({ ...merged, id }), index);
     const saved = await projectStore.write(db);
     sendJson(res, 200, {
       ok: true,
@@ -188,6 +201,7 @@ async function handleProjectCollection(req, res, projectStore, id) {
     if (index === -1) throw scraper.httpError(404, `ไม่พบโครงการ "${id}"`);
     db.projects.splice(index, 1);
     const saved = await projectStore.write(db);
+    console.log(`[asher] ${identity ? identity.id : 'unknown'} ลบโครงการ ${id}`);
     sendJson(res, 200, { ok: true, deleted: id, updatedAt: saved.updatedAt });
     return true;
   }
@@ -211,25 +225,41 @@ async function runWeakness() {
 /** เข้าสู่ระบบ / ออกจากระบบ / ถามสถานะ — เป็น endpoint เดียวที่เรียกได้ก่อน login */
 async function handleSession(req, res) {
   if (req.method === 'GET') {
+    const identity = security.authenticate(req);
     return sendJson(res, 200, {
       ok: true,
-      authRequired: security.AUTH_ENABLED,
-      authenticated: security.isAuthenticated(req)
+      mode: security.authMode(),
+      authRequired: security.authRequired(),
+      authenticated: Boolean(identity),
+      user: identity ? identity.id : null
     });
   }
 
   if (req.method === 'POST') {
-    const key = enforceLimit(req, LIMIT_LOGIN, 'login');
+    const ipKey = enforceLimit(req, LIMIT_LOGIN, 'login');
     const body = await readBody(req, MAX_LOGIN_BODY);
-    if (!security.AUTH_ENABLED) {
+    if (!security.authRequired()) {
       return sendJson(res, 200, { ok: true, authRequired: false, authenticated: true });
     }
-    if (!security.checkPassword(body.password)) {
-      throw scraper.httpError(401, 'รหัสผ่านไม่ถูกต้อง');
+
+    const email = users.normalizeEmail(body.email);
+    const accountKey = email ? `login-account:${email}` : null;
+    if (accountKey) enforceLimitKey(accountKey, LIMIT_LOGIN_ACCOUNT);
+
+    const identity = security.login(email, body.password);
+    if (!identity) {
+      // ข้อความเดียวกันทั้งกรณีอีเมลผิดและรหัสผิด จะได้ไม่บอกว่าอีเมลไหนมีในระบบ
+      throw scraper.httpError(401, security.authMode() === 'users'
+        ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
+        : 'รหัสผ่านไม่ถูกต้อง');
     }
-    security.resetLimit(key);
-    return sendJson(res, 200, { ok: true, authenticated: true }, {
-      'set-cookie': security.sessionCookie(req, security.createSessionValue())
+
+    security.resetLimit(ipKey);
+    if (accountKey) security.resetLimit(accountKey);
+    if (identity.kind === 'user') users.touchLogin(identity.id);
+
+    return sendJson(res, 200, { ok: true, authenticated: true, user: identity.id }, {
+      'set-cookie': security.sessionCookie(req, security.createSessionValue(identity))
     });
   }
 
@@ -269,7 +299,8 @@ async function handleApi(req, res, url) {
     });
   }
 
-  if (!security.isAuthenticated(req)) {
+  const identity = security.authenticate(req);
+  if (!identity) {
     throw scraper.httpError(401, 'ต้องเข้าสู่ระบบก่อน');
   }
 
@@ -281,11 +312,11 @@ async function handleApi(req, res, url) {
   }
 
   if (route[0] === 'asher' && route[1] === 'projects') {
-    if (await handleProjectCollection(req, res, store.asherStore, route[2])) return;
+    if (await handleProjectCollection(req, res, store.asherStore, route[2], identity)) return;
   }
 
   if (route[0] === 'competitors') {
-    if (await handleProjectCollection(req, res, store.competitorStore, route[1])) return;
+    if (await handleProjectCollection(req, res, store.competitorStore, route[1], identity)) return;
   }
 
   // ให้โมดูลอื่น (เช่น weakness engine) ดึงห้องทั้งหมดแบบแบน ๆ ไปใช้พิสูจน์ว่าเราชนะ
@@ -334,6 +365,7 @@ async function handleApi(req, res, url) {
         status: body.status !== undefined ? body.status : previous.status,
         outcome: body.outcome !== undefined ? body.outcome : previous.outcome,
         note: body.note !== undefined ? String(body.note).slice(0, 2000) : (previous.note || ''),
+        updatedBy: identity.id,
         updatedAt: new Date().toISOString()
       };
     }
@@ -504,7 +536,11 @@ function start() {
     console.log(`ASHER local API   http://${HOST}:${PORT}/api/health`);
     console.log(`Data input        http://${HOST}:${PORT}${HOME_PATH}`);
     console.log(`Data dir          ${store.DATA_DIR}`);
-    console.log(`Auth              ${security.AUTH_ENABLED ? 'เปิด (ต้อง login)' : 'ปิด — localhost เท่านั้น'}`);
+    const mode = security.authMode();
+    const label = mode === 'users'
+      ? `เข้าด้วยอีเมล (${users.count()} ผู้ใช้)`
+      : (mode === 'password' ? 'รหัสผ่านเดียว (ASHER_PASSWORD)' : 'ปิด — localhost เท่านั้น');
+    console.log(`Auth              ${label}`);
     for (const warning of warnings) console.warn(`[asher] ${warning}`);
   });
 

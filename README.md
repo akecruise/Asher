@@ -18,13 +18,39 @@ node server/server.js          # หรือ npm start
 ไม่มี dependency ภายนอก ต้องการแค่ Node 18 ขึ้นไป (ใช้ global `fetch`)
 
 บนเครื่องตัวเอง (bind `127.0.0.1`) ใช้ได้เลยไม่ต้อง login
-จะเอาขึ้น host สาธารณะต้องตั้งรหัสผ่านก่อน — ดู [DEPLOY-HOSTINGER.md](DEPLOY-HOSTINGER.md)
+จะเอาขึ้น host สาธารณะต้องมีผู้ใช้อย่างน้อยหนึ่งคนก่อน — ดู [DEPLOY-HOSTINGER.md](DEPLOY-HOSTINGER.md)
 
 ```bash
-ASHER_PASSWORD="รหัสอย่างน้อย 12 ตัว" HOST=0.0.0.0 node server/server.js
+npm run user -- add you@example.com     # สุ่มรหัสผ่านให้ แสดงครั้งเดียว
+HOST=0.0.0.0 node server/server.js
 ```
 
-ถ้า bind นอก `127.0.0.1` โดยไม่ตั้ง `ASHER_PASSWORD` server จะไม่ยอมบูต (fail closed)
+ถ้า bind นอก `127.0.0.1` โดยไม่มีผู้ใช้และไม่ตั้ง `ASHER_PASSWORD` server จะไม่ยอมบูต (fail closed)
+
+## ผู้ใช้ระบบ
+
+```bash
+npm run user -- list
+npm run user -- add aplusmkteam@gmail.com                  # สุ่มรหัสผ่านให้
+npm run user -- add someone@example.com --password "..."   # กำหนดเอง
+npm run user -- passwd aplusmkteam@gmail.com               # เปลี่ยนรหัสผ่าน
+npm run user -- remove aplusmkteam@gmail.com               # ลบผู้ใช้
+```
+
+- รหัสผ่านเก็บเป็น scrypt hash ใน `users.json` (สิทธิ์ไฟล์ 0600) ที่ `ASHER_DATA_DIR` ไม่เก็บรหัสจริงที่ไหนเลย
+- **เปลี่ยนรหัสผ่านหรือลบผู้ใช้ = session ของคนนั้นตายทันที** ไม่ต้อง restart
+- ทุกครั้งที่บันทึกโครงการ ระบบจดว่า `updatedBy` เป็นใคร และการลบโครงการจะขึ้น log ฝั่ง server
+- รันคำสั่งพวกนี้บนเครื่อง/เซิร์ฟเวอร์เดียวกับที่เก็บข้อมูล และตั้ง `ASHER_DATA_DIR` ให้ตรงกับตอนรัน server
+
+โหมด auth มี 3 แบบ ระบบเลือกให้เอง:
+
+| มีอะไรอยู่ | โหมด | หน้า login |
+| --- | --- | --- |
+| มีผู้ใช้ใน `users.json` | เข้าด้วยอีเมล + รหัสผ่าน | มีช่องอีเมล |
+| ไม่มีผู้ใช้ แต่ตั้ง `ASHER_PASSWORD` | รหัสผ่านเดียว | มีแต่ช่องรหัสผ่าน |
+| ไม่มีทั้งคู่ | ไม่มี auth (เฉพาะ localhost) | ไม่มีหน้า login |
+
+ตั้งทั้งสองอย่างพร้อมกันได้ — `ASHER_PASSWORD` จะกลายเป็นรหัสฉุกเฉินไว้กู้ระบบตอนถูกล็อกออก
 
 ## โครงสร้าง
 
@@ -32,6 +58,8 @@ ASHER_PASSWORD="รหัสอย่างน้อย 12 ตัว" HOST=0.0.0
 | --- | --- |
 | `server/server.js` | static server + JSON API (พอร์ต 8000) |
 | `server/security.js` | auth, rate limit, CORS/CSRF, security header — ใช้ตอน deploy ออกสาธารณะ |
+| `server/users.js` | ผู้ใช้ระบบ + scrypt hash เก็บใน `users.json` |
+| `bin/asher-user.js` | CLI เพิ่ม/ลบ/เปลี่ยนรหัสผ่านผู้ใช้ (`npm run user -- ...`) |
 | `server/store.js` | อ่าน/เขียน `data/asher-projects.json` แบบ atomic + normalize ค่า |
 | `server/scraper.js` | โหลดหน้าเว็บ แปลง HTML เป็นข้อความ แล้วแกะค่าออกมา |
 | `shared/asher-theme.css` | โทนสีกลางที่ใช้ร่วมกับโมดูลอื่น |
@@ -97,12 +125,13 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 
 | เรื่อง | ทำอะไรไว้ |
 |---|---|
-| เข้าใช้งาน | ต้อง login ด้วย `ASHER_PASSWORD` — session เป็น cookie `HttpOnly` + `SameSite=Lax` |
+| เข้าใช้งาน | ต้อง login ด้วยอีเมล + รหัสผ่านรายคน — session เป็น cookie `HttpOnly` + `SameSite=Lax` |
+| รหัสผ่าน | scrypt (N=16384) + salt ต่อคน · เปลี่ยน/ลบผู้ใช้แล้ว session เก่าตายทันที |
 | เรียกจากสคริปต์ | `Authorization: Bearer $ASHER_TOKEN` หรือ header `x-asher-token` |
 | CORS | ปิดข้ามโดเมนเป็นค่าเริ่มต้น เปิดเฉพาะที่ระบุใน `ASHER_ALLOWED_ORIGINS` |
 | CSRF | ทุกคำขอที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเอง |
 | ไฟล์ static | เสิร์ฟแค่ `/modules/` กับ `/shared/` — `data/`, `server/`, `.git/` เข้าไม่ถึง |
-| rate limit | อ่าน 240 / เขียน 60 / scrape 12 ต่อนาที/IP, login ผิดได้ 10 ครั้งต่อ 15 นาที |
+| rate limit | อ่าน 240 / เขียน 60 / scrape 12 ต่อนาที/IP, login ผิดได้ 10 ครั้ง/15 นาที/IP และ 20 ครั้ง/15 นาที/บัญชี |
 | header | CSP, `X-Frame-Options: DENY`, `nosniff`, HSTS (เมื่อเป็น HTTPS) |
 | ที่เก็บข้อมูล | `ASHER_DATA_DIR` ชี้ออกนอกโฟลเดอร์เว็บได้ กัน deploy ทับแล้วข้อมูลหาย |
 

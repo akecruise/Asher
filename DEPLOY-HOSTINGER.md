@@ -52,24 +52,35 @@ chmod 700 ~/asher-data
 ทำไมต้องอยู่นอกโฟลเดอร์เว็บ: การ deploy ของ Hostinger คือการเขียนทับโฟลเดอร์โปรเจกต์
 ถ้าข้อมูลอยู่ใน `data/` ข้างใน ข้อมูลจะหายทุกครั้งที่ deploy
 
-### 3. ตั้งค่า environment variables
+### 3. สร้างผู้ใช้
+
+```bash
+ASHER_DATA_DIR=~/asher-data npm run user -- add akecruise@gmail.com
+ASHER_DATA_DIR=~/asher-data npm run user -- add aplusmkteam@gmail.com
+```
+
+ไม่ใส่ `--password` ระบบจะสุ่มรหัสให้และ **แสดงครั้งเดียว** — ส่งให้เจ้าตัวทางช่องทางส่วนตัว
+เปลี่ยนทีหลังด้วย `npm run user -- passwd <email>` (session เดิมของคนนั้นถูกตัดทันที)
+ผู้ใช้ถูกเก็บที่ `$ASHER_DATA_DIR/users.json` เป็น scrypt hash สิทธิ์ไฟล์ 0600
+
+### 4. ตั้งค่า environment variables
 
 ใน hPanel → **Advanced → Node.js → Environment variables** (หรือไฟล์ `.env` บน VPS)
 
 ```
-ASHER_PASSWORD=<รหัสที่สุ่มมา>
 ASHER_DATA_DIR=/home/USERNAME/asher-data
 ASHER_TRUST_PROXY=1
 ASHER_COOKIE_SECURE=1
+ASHER_PASSWORD=<รหัสฉุกเฉิน ตั้งไว้ก็ดี ไว้กู้ตอนถูกล็อกออก>
 ```
 
-### 4. ชี้ startup file และเปิด HTTPS
+### 5. ชี้ startup file และเปิด HTTPS
 
 - Application startup file: `server/server.js`
 - เปิด **SSL / Let's Encrypt** และ **Force HTTPS** ใน hPanel ก่อนใช้งานจริงเสมอ
   (ไม่มี HTTPS = รหัสผ่านกับ session cookie วิ่งเป็น plaintext)
 
-### 5. ตรวจว่าปิดสนิทจริง
+### 6. ตรวจว่าปิดสนิทจริง
 
 หลัง deploy เปิด URL พวกนี้ในหน้าต่าง incognito — ต้อง **ไม่เห็นข้อมูล** ทุกอัน:
 
@@ -132,14 +143,16 @@ location / {
 
 ## ความเสี่ยงที่ยังเหลืออยู่ (รู้ไว้ ไม่ได้แก้ในโค้ด)
 
-1. **รหัสผ่านเดียวใช้ร่วมกันทั้งทีม** — ไม่มี user แยกคน ไม่มี log ว่าใครแก้อะไร
-   ถ้าคนในทีมออก ต้องเปลี่ยนรหัสผ่านแล้วแจ้งใหม่ทุกคน (เปลี่ยนแล้ว session เก่าตายทันที)
-2. **DNS rebinding ที่ `/api/scrape`** — เราเช็ค IP ตอน resolve แต่โดเมนอาจเปลี่ยน IP
+1. **ทุกคนที่ login ได้ มีสิทธิ์เท่ากันหมด** — ยังไม่มีการแบ่ง role (อ่านอย่างเดียว / แก้ได้ / แอดมิน)
+   ใครก็ลบโครงการได้ ระบบจดแค่ `updatedBy` กับ log ตอนลบ ไม่ได้เก็บประวัติการแก้แบบย้อนดูได้
+2. **เปลี่ยนรหัสผ่านเองไม่ได้** — ต้องให้คนที่เข้า server ได้รัน `npm run user -- passwd <email>` ให้
+   (ทีมเล็กพอไหว ถ้าคนเยอะขึ้นค่อยทำหน้าเปลี่ยนรหัสผ่านเพิ่ม)
+3. **DNS rebinding ที่ `/api/scrape`** — เราเช็ค IP ตอน resolve แต่โดเมนอาจเปลี่ยน IP
    ระหว่างที่ `fetch` ต่อจริง ความเสี่ยงต่ำเพราะต้อง login ก่อน แต่ถ้าไม่ได้ใช้ฟีเจอร์นี้
    ปิดไปเลยด้วย `ASHER_ENABLE_SCRAPE=0`
-3. **rate limit เก็บใน memory ของ process เดียว** — ถ้ารันหลาย instance ต้องกันที่ proxy อีกชั้น
+4. **rate limit เก็บใน memory ของ process เดียว** — ถ้ารันหลาย instance ต้องกันที่ proxy อีกชั้น
    และตัวนับจะรีเซ็ตทุกครั้งที่ Hostinger restart process
-4. **ข้อมูลเป็นไฟล์ JSON ไม่ใช่ฐานข้อมูล** — โหลดหนัก ๆ พร้อมกันหลายคนจะช้า
+5. **ข้อมูลเป็นไฟล์ JSON ไม่ใช่ฐานข้อมูล** — โหลดหนัก ๆ พร้อมกันหลายคนจะช้า
    ถ้าทีมโตกว่า 5-10 คน ควรย้ายไปใช้ฐานข้อมูลจริง
-5. **การ scrape เว็บคู่แข่ง** — ตรวจ robots.txt และเงื่อนไขการใช้งานของเว็บปลายทางเองด้วย
+6. **การ scrape เว็บคู่แข่ง** — ตรวจ robots.txt และเงื่อนไขการใช้งานของเว็บปลายทางเองด้วย
    ยิงถี่เกินไปอาจโดนบล็อก IP ของ host หรือเข้าข่ายผิดเงื่อนไขบริการของ Hostinger

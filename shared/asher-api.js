@@ -242,7 +242,8 @@
    */
   function wireLogout() {
     var links = document.querySelectorAll('[data-asher-logout]');
-    if (!links.length) return;
+    var labels = document.querySelectorAll('[data-asher-user]');
+    if (!links.length && !labels.length) return;
     for (var i = 0; i < links.length; i += 1) {
       links[i].hidden = true;
       links[i].addEventListener('click', function (event) {
@@ -250,9 +251,16 @@
         AsherAPI.logout();
       });
     }
+    for (var j = 0; j < labels.length; j += 1) labels[j].hidden = true;
+
     request('/api/session', { timeout: 4000 }).then(function (payload) {
       if (!payload || !payload.authRequired) return;
       for (var i = 0; i < links.length; i += 1) links[i].hidden = false;
+      if (!payload.user) return;
+      for (var j = 0; j < labels.length; j += 1) {
+        labels[j].textContent = payload.user;
+        labels[j].hidden = false;
+      }
     }).catch(function () { /* ต่อ API ไม่ได้ ก็ซ่อนไว้อย่างนั้น */ });
   }
 

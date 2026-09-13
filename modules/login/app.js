@@ -7,8 +7,27 @@
 
   var form = document.getElementById('form');
   var input = document.getElementById('password');
+  var email = document.getElementById('email');
+  var emailRow = document.getElementById('emailRow');
   var submit = document.getElementById('submit');
   var errorBox = document.getElementById('error');
+  var mode = 'password';
+
+  /**
+   * ถาม server ว่าตอนนี้เป็นโหมดไหน
+   *   users    -> มีผู้ใช้ในระบบ ต้องกรอกอีเมลด้วย
+   *   password -> รหัสผ่านเดียว (ASHER_PASSWORD) ไม่ต้องกรอกอีเมล
+   */
+  fetch('/api/session', { credentials: 'same-origin' })
+    .then(function (res) { return res.json(); })
+    .then(function (payload) {
+      mode = (payload && payload.mode) || 'password';
+      if (mode !== 'users') return;
+      emailRow.hidden = false;
+      email.required = true;
+      email.focus();
+    })
+    .catch(function () { /* ต่อไม่ได้ ก็ปล่อยเป็นโหมดรหัสผ่านเดียวไปก่อน */ });
 
   /** ยอมเฉพาะ path ภายในเว็บเดียวกัน กัน open redirect */
   function nextPath() {
@@ -33,7 +52,10 @@
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ password: input.value })
+        body: JSON.stringify({
+          email: mode === 'users' ? email.value.trim() : '',
+          password: input.value
+        })
       });
       var payload = null;
       try { payload = await response.json(); } catch (e) { /* ไม่ใช่ JSON */ }

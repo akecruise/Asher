@@ -10,6 +10,8 @@
  */
 const crypto = require('crypto');
 
+const users = require('./users');
+
 /* ------------------------------ config ------------------------------ */
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
@@ -24,9 +26,25 @@ function flag(name, fallback) {
 const PASSWORD = String(process.env.ASHER_PASSWORD || '').trim();
 /** token สำหรับเรียก API จากสคริปต์/โมดูลอื่น (Authorization: Bearer ...) */
 const TOKEN = String(process.env.ASHER_TOKEN || '').trim();
+/** ชื่อที่ใช้แทนคนที่ login ด้วย ASHER_PASSWORD (โหมดรหัสผ่านเดียว / รหัสฉุกเฉิน) */
+const ADMIN_ID = String(process.env.ASHER_ADMIN_EMAIL || 'admin').trim().toLowerCase();
 
-const AUTH_ENABLED = Boolean(PASSWORD || TOKEN);
 const MIN_SECRET_LENGTH = 12;
+
+/**
+ * มีผู้ใช้ใน users.json = โหมดหลายคน (login ด้วยอีเมล)
+ * ไม่มี แต่ตั้ง ASHER_PASSWORD = โหมดรหัสผ่านเดียว
+ * ไม่มีทั้งคู่ = ไม่มี auth (ใช้ได้เฉพาะ localhost)
+ */
+function authMode() {
+  if (users.count() > 0) return 'users';
+  if (PASSWORD || TOKEN) return 'password';
+  return 'none';
+}
+
+function authRequired() {
+  return authMode() !== 'none';
+}
 
 const SESSION_COOKIE = 'asher_session';
 const SESSION_HOURS = Math.min(Math.max(Number(process.env.ASHER_SESSION_HOURS || 12), 1), 24 * 30);
@@ -66,8 +84,9 @@ function isLoopbackHost(host) {
 function assertSafeConfig({ host }) {
   const warnings = [];
   const publicBind = !isLoopbackHost(host);
+  const authOn = authRequired();
 
-  if (AUTH_ENABLED) {
+  if (authOn) {
     if (PASSWORD && PASSWORD.length < MIN_SECRET_LENGTH) {
       throw new Error(
         `ASHER_PASSWORD สั้นเกินไป (ต้องอย่างน้อย ${MIN_SECRET_LENGTH} ตัวอักษร) — ` +
@@ -85,10 +104,10 @@ function assertSafeConfig({ host }) {
     );
   }
 
-  if (!AUTH_ENABLED && publicBind) {
+  if (!authOn && publicBind) {
     warnings.push('!! เปิดสาธารณะโดยไม่มี auth (ASHER_ALLOW_INSECURE=1) — ใครก็ลบข้อมูลได้');
   }
-  if (ALLOWED_ORIGINS.length && !AUTH_ENABLED) {
+  if (ALLOWED_ORIGINS.length && !authOn) {
     warnings.push('ตั้ง ASHER_ALLOWED_ORIGINS ไว้แต่ไม่มี auth — เท่ากับเปิดให้เว็บอื่นเรียก API ได้ฟรี');
   }
   if (publicBind && !TRUST_PROXY) {
@@ -96,6 +115,9 @@ function assertSafeConfig({ host }) {
   }
   if (!SCRAPE_ENABLED) {
     warnings.push('ปิด /api/scrape อยู่ (ASHER_ENABLE_SCRAPE=0)');
+  }
+  if (authMode() === 'users' && PASSWORD) {
+    warnings.push('มีผู้ใช้ใน users.json แล้ว แต่ยังตั้ง ASHER_PASSWORD อยู่ — ใช้เป็นรหัสฉุกเฉินได้ ถ้าไม่ต้องการให้ลบทิ้ง');
   }
   return warnings;
 }
@@ -117,29 +139,52 @@ function sign(payload) {
   return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest();
 }
 
-/** สร้างค่า cookie: <payload>.<hmac> */
-function createSessionValue() {
-  const payload = b64url(JSON.stringify({ exp: Date.now() + SESSION_TTL_MS }));
+/**
+ * สร้างค่า cookie: <payload>.<hmac>
+ * payload มี u = คนที่ login, pv = ลายเซ็นย่อของรหัสผ่านตอนนั้น
+ * (เปลี่ยนรหัสผ่าน/ลบผู้ใช้ -> pv ไม่ตรง -> session เก่าใช้ไม่ได้ทันที)
+ */
+function createSessionValue(identity) {
+  const payload = b64url(JSON.stringify({
+    u: identity.id,
+    k: identity.kind,
+    pv: identity.pv || '',
+    exp: Date.now() + SESSION_TTL_MS
+  }));
   return `${payload}.${b64url(sign(payload))}`;
 }
 
+/** คืน identity ถ้า cookie ใช้ได้ ไม่ได้คืน null */
 function verifySessionValue(value) {
   const raw = String(value || '');
   const dot = raw.indexOf('.');
-  if (dot <= 0) return false;
+  if (dot <= 0) return null;
   const payload = raw.slice(0, dot);
   const signature = raw.slice(dot + 1);
 
   const expected = b64url(sign(payload));
-  if (signature.length !== expected.length) return false;
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+  if (signature.length !== expected.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
 
+  let data;
   try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return Number(data.exp) > Date.now();
+    data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
   } catch {
-    return false;
+    return null;
   }
+  if (!(Number(data.exp) > Date.now())) return null;
+
+  if (data.k === 'user') {
+    // ผู้ใช้ต้องยังอยู่ในระบบ และรหัสผ่านต้องไม่ถูกเปลี่ยนหลังจากออก cookie ใบนี้
+    const user = users.find(data.u);
+    if (!user || users.passwordVersion(user) !== data.pv) return null;
+    return { id: user.email, kind: 'user' };
+  }
+  if (data.k === 'admin') {
+    if (!PASSWORD) return null;
+    return { id: data.u || ADMIN_ID, kind: 'admin' };
+  }
+  return null;
 }
 
 function parseCookies(header) {
@@ -160,26 +205,44 @@ function bearerToken(req) {
   return header ? String(header).trim() : '';
 }
 
-/** รหัสผ่านถูกไหม (ใช้ตอน login) */
-function checkPassword(input) {
-  const value = String(input || '');
-  if (!value) return false;
-  if (PASSWORD && safeEqual(value, PASSWORD)) return true;
+/**
+ * ตรวจ email + รหัสผ่านตอน login — คืน identity ถ้าผ่าน ไม่ผ่านคืน null
+ * ไม่ใส่อีเมลมา = พยายาม login ด้วย ASHER_PASSWORD (โหมดรหัสผ่านเดียว / รหัสฉุกเฉิน)
+ */
+function login(email, password) {
+  const value = String(password || '');
+  if (!value) return null;
+
+  const wanted = users.normalizeEmail(email);
+  if (wanted) {
+    const user = users.authenticate(wanted, value);
+    if (user) return { id: user.email, kind: 'user', pv: users.passwordVersion(user) };
+    // อีเมลที่ตรงกับ ADMIN_ID ใช้คู่กับ ASHER_PASSWORD ได้ เผื่อกรณีถูกล็อกออกจากระบบ
+    if (wanted !== ADMIN_ID) return null;
+  }
+
+  if (PASSWORD && safeEqual(value, PASSWORD)) return { id: ADMIN_ID, kind: 'admin' };
   // ยอมให้ใช้ token แทนรหัสผ่านได้ เผื่อ deploy แบบตั้งแต่ token อย่างเดียว
-  return Boolean(TOKEN) && safeEqual(value, TOKEN);
+  if (TOKEN && safeEqual(value, TOKEN)) return { id: ADMIN_ID, kind: 'admin' };
+  return null;
 }
 
-function isAuthenticated(req) {
-  if (!AUTH_ENABLED) return true;
+/** คืน identity ของคนที่ยิง request มา ไม่ผ่าน auth คืน null */
+function authenticate(req) {
+  if (!authRequired()) return { id: 'local', kind: 'local' };
 
   const token = bearerToken(req);
   if (token) {
-    if (TOKEN && safeEqual(token, TOKEN)) return true;
-    if (PASSWORD && safeEqual(token, PASSWORD)) return true;
+    if (TOKEN && safeEqual(token, TOKEN)) return { id: 'api-token', kind: 'token' };
+    if (PASSWORD && safeEqual(token, PASSWORD)) return { id: ADMIN_ID, kind: 'admin' };
   }
 
   const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  return cookie ? verifySessionValue(cookie) : false;
+  return cookie ? verifySessionValue(cookie) : null;
+}
+
+function isAuthenticated(req) {
+  return Boolean(authenticate(req));
 }
 
 function isSecureRequest(req) {
@@ -321,16 +384,19 @@ function resetLimit(key) {
 }
 
 module.exports = {
-  AUTH_ENABLED,
+  ADMIN_ID,
   SCRAPE_ENABLED,
   TRUST_PROXY,
   SESSION_COOKIE,
   SESSION_HOURS,
   ALLOWED_ORIGINS,
   assertSafeConfig,
+  authMode,
+  authRequired,
   isLoopbackHost,
+  authenticate,
   isAuthenticated,
-  checkPassword,
+  login,
   createSessionValue,
   sessionCookie,
   corsHeaders,
