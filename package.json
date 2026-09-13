@@ -5,7 +5,17 @@
   "description": "ASHER Marketing Intelligence — local API + โมดูลใส่ข้อมูลโครงการ",
   "scripts": {
     "start": "node server/server.js",
-    "dev": "node --watch server/server.js"
+    "dev": "node --watch server/server.js",
+    "test": "node --test test/*.js"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "server/",
+    "shared/",
+    "modules/",
+    "data/sample-competitors.json",
+    "db/"
+  ]
 }

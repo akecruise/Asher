@@ -1,0 +1,12 @@
+.git/
+.github/
+node_modules/
+test/
+db/
+*.log
+*.md
+Dockerfile
+.dockerignore
+.gitignore
+# ข้อมูลจริงไม่ต้องติดไปกับ image — mount volume เอา (ยกเว้น sample ที่ Dockerfile คัดลอกเอง)
+data/

@@ -1,0 +1,35 @@
+[
+  {
+    "id": "the-base-ratchada-19",
+    "name": "The Base Ratchada 19",
+    "location": "รัชดาภิเษก 19",
+    "developer": "ตัวอย่างสำหรับทดลองระบบ",
+    "unitsTotal": 420,
+    "floors": 8,
+    "facilities": [
+      "สระว่ายน้ำ",
+      "ฟิตเนส",
+      "ที่จอดรถ"
+    ],
+    "rooms": [
+      {
+        "type": "1 Bedroom (S)",
+        "sizeSqm": 23,
+        "ceilingHeightM": 2.7,
+        "priceTHB": 3350000
+      },
+      {
+        "type": "1 Bedroom (L)",
+        "sizeSqm": 31,
+        "ceilingHeightM": 2.5,
+        "priceTHB": 4450000
+      },
+      {
+        "type": "2 Bedroom",
+        "sizeSqm": 44,
+        "ceilingHeightM": 2.5,
+        "priceTHB": 6600000
+      }
+    ]
+  }
+]

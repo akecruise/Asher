@@ -11,6 +11,7 @@
 ```bash
 node server/server.js          # หรือ npm start
 # PORT=8080 node server/server.js
+npm test                       # เช็คว่าพร้อม deploy (17 เคส ยิงใส่ server จริง)
 ```
 
 เปิด <http://localhost:8000/modules/asher-projects/>
@@ -32,6 +33,10 @@ node server/server.js          # หรือ npm start
 | `data/asher-projects.json` | ข้อมูลฝั่งเรา |
 | `data/competitors.json` | ข้อมูลฝั่งคู่แข่ง (schema เดียวกัน) |
 | `data/weakness-actions.json` | บันทึกว่าเซลส์ใช้มุมไหน ผลเป็นยังไง |
+| `data/sample-competitors.json` | คู่แข่งตัวอย่างของปุ่ม "ใส่ข้อมูลตัวอย่าง" |
+| `test/smoke.js` | เทสก่อน deploy — auth, CORS, CRUD, gzip, graceful shutdown |
+| `Dockerfile` | image สำหรับ deploy (ไม่ต้อง build step เพราะไม่มี dependency) |
+| `db/` | schema ของ Inbox module ที่จะมาทีหลัง ยังไม่ถูกใช้โดย server ตัวนี้ |
 
 ## API
 
@@ -77,6 +82,9 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 `/api/scrape` ยอมเฉพาะ `http://` / `https://` ที่ปลายทางเป็น IP สาธารณะ — ยิงเข้า `localhost`,
 `10.x`, `192.168.x`, link-local ไม่ได้ (กัน SSRF) และเช็คซ้ำทุก redirect
 ถ้าต้องดึงจาก staging ในวงแลนตัวเอง สั่ง `ASHER_ALLOW_PRIVATE_HOSTS=1 node server/server.js`
+
+API ทั้งชุดแก้และลบข้อมูลได้โดยไม่ต้องยืนยันตัวตน **ตราบใดที่ยังไม่ตั้ง `ASHER_API_TOKEN`**
+บนเครื่องตัวเองไม่เป็นไรเพราะฟังแค่ `127.0.0.1` แต่พอ deploy ออกไปต้องตั้งเสมอ — ดูหัวข้อถัดไป
 
 ## เวลา Local API ไม่ทำงาน
 
@@ -159,3 +167,50 @@ const proven = rooms.filter((room) => room.sizeSqm);
 
 ถ้าหน้าโมดูลถูกเสิร์ฟคนละพอร์ตกับ API ให้ระบุ base ได้ทาง `?api=http://localhost:8000`
 (ค่าจะถูกจำไว้ใน `localStorage`)
+
+## Deploy
+
+```bash
+npm test                                     # ต้องผ่านครบก่อน
+docker build -t asher .
+docker run -d --name asher -p 8000:8000 \
+  -v asher-data:/data \
+  -e ASHER_API_TOKEN="$(openssl rand -hex 24)" \
+  -e ASHER_ALLOWED_ORIGINS=https://workspace.example.com \
+  asher
+```
+
+ไม่ใช้ Docker ก็ได้ — `node server/server.js` พร้อมตัวแปรชุดเดียวกัน
+
+| ตัวแปร | ค่าเริ่มต้น | ต้องตั้งตอน deploy ไหม |
+| --- | --- | --- |
+| `PORT` | `8000` | ตามที่ platform กำหนด |
+| `HOST` | `127.0.0.1` | **ต้อง** เป็น `0.0.0.0` ไม่งั้นข้างนอก container เข้าไม่ถึง (Dockerfile ตั้งให้แล้ว) |
+| `ASHER_DATA_DIR` | `./data` | **ต้อง** ชี้ไป volume ที่อยู่รอด ไม่งั้นข้อมูลหายทุกครั้งที่ deploy |
+| `ASHER_API_TOKEN` | ไม่ตั้ง = ไม่ต้องยืนยันตัวตน | **ต้อง** ตั้ง |
+| `ASHER_ALLOWED_ORIGINS` | ไม่ตั้ง = same-origin เท่านั้น | ตั้งเมื่อมีหน้าเว็บคนละโดเมนเรียกเข้ามา |
+| `ASHER_ALLOW_PRIVATE_HOSTS` | ปิด | **อย่าเปิด** บน production |
+
+### สามข้อที่พลาดแล้วเจ็บ
+
+1. **ไม่ตั้ง `ASHER_API_TOKEN`** — ทุก endpoint รวมถึง `DELETE` เปิดให้ทุกคน และ `/api/scrape`
+   จะกลายเป็น proxy ให้คนอื่นใช้ยิงเว็บอื่นในนามเรา server จะเตือนใน log ตอนบูตถ้าฟังทุก
+   interface โดยไม่มี token
+2. **ไม่ mount volume ที่ `ASHER_DATA_DIR`** — ข้อมูลอยู่ในไฟล์ JSON ไม่ใช่ฐานข้อมูล
+   filesystem ของ container หายทุกครั้งที่ deploy ใหม่
+3. **ครอบ shell ทับ `CMD`** — ทำให้ `SIGTERM` ไปไม่ถึง node แล้ว graceful shutdown ไม่ทำงาน
+   งานเขียนที่ค้างอยู่จะหาย Dockerfile จึงใช้ `CMD ["node", ...]` แบบไม่มี shell
+
+### token ฝั่งหน้าเว็บ
+
+หน้าโมดูลจะถาม token ครั้งแรกที่โดน 401 แล้วจำไว้ใน `localStorage` ส่งลิงก์พร้อม token
+ให้ทีมได้ด้วย `?token=...` (ระบบจะลบออกจากแถบที่อยู่ให้เองหลังเก็บแล้ว)
+
+### ที่ platform ต้องรู้
+
+| | |
+| --- | --- |
+| health check | `GET /api/health` — ตอบ 200 โดยไม่ต้องมี token (ตัวเลขธุรกิจโผล่เฉพาะเมื่อมี token) |
+| สัญญาณปิด | `SIGTERM` → หยุดรับ request ใหม่ รอเขียนไฟล์ให้จบ แล้วออกด้วย code 0 (บังคับออกที่ 10 วินาที) |
+| ไฟล์ static | มี ETag + gzip ให้แล้ว (`app.js` 32KB → 7.9KB) ไม่ต้องมี CDN ก็ได้ |
+| ขนาด body สูงสุด | 5MB (เผื่อวาง HTML ทั้งหน้ามาให้แกะ) |

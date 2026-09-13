@@ -1,15 +1,18 @@
 'use strict';
 /**
- * เก็บข้อมูลโครงการลงไฟล์ JSON — ใช้ทั้งฝั่ง ASHER และฝั่งคู่แข่ง (schema เดียวกัน)
+ * เก็บข้อมูลลงไฟล์ JSON — ใช้ทั้งฝั่ง ASHER และฝั่งคู่แข่ง (schema เดียวกัน)
+ *
  * เขียนแบบ atomic: เขียน .tmp แล้ว rename ทับ กันไฟล์พังตอนไฟดับ/ปิด server กลางคัน
+ * ที่เก็บย้ายได้ด้วย ASHER_DATA_DIR — ตอน deploy ต้องชี้ไป volume ที่อยู่รอด
+ * ไม่งั้นข้อมูลหายทุกครั้งที่ deploy ใหม่
  */
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-
-const EMPTY = { version: 1, updatedAt: null, projects: [] };
+const DATA_DIR = process.env.ASHER_DATA_DIR
+  ? path.resolve(process.env.ASHER_DATA_DIR)
+  : path.join(__dirname, '..', 'data');
 
 const PROJECT_FIELDS = [
   'name', 'brand', 'location', 'website', 'developer', 'status',
@@ -114,30 +117,46 @@ function normalizeDb(raw) {
   };
 }
 
-function createStore(fileName) {
+/** งานเขียนที่ยังไม่ลงดิสก์ — ตอนปิด server ต้องรอให้หมดก่อน (ดู flush) */
+const pending = new Set();
+
+/**
+ * store หนึ่งไฟล์ JSON
+ *   normalize : แปลง/ตรวจค่าก่อนเขียนและหลังอ่าน (ไม่ส่งมา = เก็บดิบ)
+ *   fallback  : ค่าที่คืนเมื่อยังไม่มีไฟล์
+ */
+function createStore(fileName, options) {
+  const opts = options || {};
+  const normalize = opts.normalize || ((value) => value);
+  const fallback = opts.fallback !== undefined ? opts.fallback : { version: 1, updatedAt: null, projects: [] };
   const file = path.join(DATA_DIR, fileName);
   let writeChain = Promise.resolve();
 
+  function blank() {
+    return JSON.parse(JSON.stringify(fallback));
+  }
+
   async function read() {
     try {
-      const text = await fsp.readFile(file, 'utf8');
-      return normalizeDb(JSON.parse(text));
+      return normalize(JSON.parse(await fsp.readFile(file, 'utf8')));
     } catch (err) {
-      if (err.code === 'ENOENT') return { version: 1, updatedAt: null, projects: [] };
+      if (err.code === 'ENOENT') return blank();
       if (err instanceof SyntaxError) {
         // ไฟล์เสีย: สำรองไว้แล้วเริ่มใหม่ ดีกว่าปล่อยให้ทั้งระบบล่ม
         await fsp.rename(file, `${file}.corrupt-${Date.now()}`).catch(() => {});
-        return { version: 1, updatedAt: null, projects: [] };
+        return blank();
       }
       throw err;
     }
   }
 
-  function write(db) {
+  function write(value) {
     // ต่อคิวการเขียนไว้ กันสองรีเควสต์เขียนทับกัน
     writeChain = writeChain.then(async () => {
-      const next = normalizeDb(db);
-      next.updatedAt = new Date().toISOString();
+      const next = normalize(value);
+      if (next && typeof next === 'object' && 'updatedAt' in next) {
+        next.updatedAt = new Date().toISOString();
+      }
       const tmp = `${file}.tmp-${process.pid}`;
       await fsp.mkdir(DATA_DIR, { recursive: true });
       await fsp.writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
@@ -146,61 +165,30 @@ function createStore(fileName) {
     }, async () => {
       throw new Error('write queue broken');
     });
+
+    pending.add(writeChain);
+    writeChain.catch(() => {}).finally(() => pending.delete(writeChain));
     return writeChain;
   }
 
   return { file, read, write };
 }
 
-/** เก็บค่าอะไรก็ได้เป็น JSON ก้อนเดียว (ใช้กับบันทึกการตัดสินใจของ weakness engine) */
-function createBlobStore(fileName, fallback) {
-  const file = path.join(DATA_DIR, fileName);
-  let writeChain = Promise.resolve();
-
-  async function read() {
-    try {
-      return JSON.parse(await fsp.readFile(file, 'utf8'));
-    } catch (err) {
-      if (err.code === 'ENOENT' || err instanceof SyntaxError) {
-        return JSON.parse(JSON.stringify(fallback));
-      }
-      throw err;
-    }
-  }
-
-  function write(value) {
-    writeChain = writeChain.then(async () => {
-      const tmp = `${file}.tmp-${process.pid}`;
-      await fsp.mkdir(DATA_DIR, { recursive: true });
-      await fsp.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-      await fsp.rename(tmp, file);
-      return value;
-    }, async () => {
-      throw new Error('write queue broken');
-    });
-    return writeChain;
-  }
-
-  return { file, read, write };
+/** รอให้งานเขียนที่ค้างอยู่ลงดิสก์ให้หมด — ใช้ตอนรับ SIGTERM */
+function flush() {
+  return Promise.allSettled([...pending]);
 }
 
-const asherStore = createStore('asher-projects.json');
-const competitorStore = createStore('competitors.json');
+const asherStore = createStore('asher-projects.json', { normalize: normalizeDb });
+const competitorStore = createStore('competitors.json', { normalize: normalizeDb });
+const actionStore = createStore('weakness-actions.json', { fallback: { version: 1, items: {} } });
 
 module.exports = {
   DATA_DIR,
   DATA_FILE: asherStore.file,
-  PROJECT_FIELDS,
-  ROOM_FIELDS,
-  createStore,
-  createBlobStore,
   asherStore,
   competitorStore,
-  // ทางลัดของเดิม ให้ code ที่เรียก store.read()/store.write() ตรง ๆ ยังใช้ได้
-  read: asherStore.read,
-  write: asherStore.write,
+  actionStore,
   normalizeProject,
-  normalizeRoom,
-  slugify,
-  num
+  flush
 };

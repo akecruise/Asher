@@ -6,40 +6,38 @@
  *   PORT=8080 node server/server.js
  *
  * ไม่มี dependency ภายนอก ใช้ Node 18+ (ต้องมี global fetch)
+ *
+ * ตัวแปรที่ใช้ตอน deploy — ดูรายละเอียดใน README หัวข้อ "Deploy"
+ *   PORT / HOST              พอร์ตและ interface ที่ฟัง (ค่าเริ่มต้น 8000 / 127.0.0.1)
+ *   ASHER_DATA_DIR           ที่เก็บไฟล์ JSON ต้องเป็น volume ที่อยู่รอดการ deploy
+ *   ASHER_API_TOKEN          บังคับ token ทุก /api — ไม่ตั้ง = ใครเข้าถึงพอร์ตได้ก็ลบข้อมูลได้
+ *   ASHER_ALLOWED_ORIGINS    origin ที่เรียกข้ามโดเมนได้ คั่นด้วย , (ไม่ตั้ง = same-origin เท่านั้น)
+ *   ASHER_ALLOW_PRIVATE_HOSTS  ให้ /api/scrape ยิงเข้า network ภายในได้ (ใช้เฉพาะตอน dev)
  */
 const http = require('http');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const zlib = require('zlib');
+const crypto = require('crypto');
 
 const store = require('./store');
 const scraper = require('./scraper');
 const weakness = require('./weakness');
 
-const actionStore = store.createBlobStore('weakness-actions.json', { version: 1, items: {} });
-
-/** คู่แข่งตัวอย่างสำหรับปุ่ม "ใส่ข้อมูลตัวอย่าง" — ลบทิ้งได้ผ่าน /api/competitors/:id */
-const SAMPLE_COMPETITORS = [
-  {
-    id: 'the-base-ratchada-19',
-    name: 'The Base Ratchada 19',
-    location: 'รัชดาภิเษก 19',
-    developer: 'ตัวอย่างสำหรับทดลองระบบ',
-    unitsTotal: 420,
-    floors: 8,
-    facilities: ['สระว่ายน้ำ', 'ฟิตเนส', 'ที่จอดรถ'],
-    rooms: [
-      { type: '1 Bedroom (S)', sizeSqm: 23, ceilingHeightM: 2.7, priceTHB: 3350000 },
-      { type: '1 Bedroom (L)', sizeSqm: 31, ceilingHeightM: 2.5, priceTHB: 4450000 },
-      { type: '2 Bedroom', sizeSqm: 44, ceilingHeightM: 2.5, priceTHB: 6600000 }
-    ]
-  }
-];
+/* ------------------------------ config ----------------------------- */
 
 const PORT = Number(process.env.PORT || 8000);
 const HOST = process.env.HOST || '127.0.0.1';
 const ROOT = path.join(__dirname, '..');
 const MAX_BODY = 5 * 1024 * 1024; // เผื่อกรณีวาง HTML ทั้งหน้ามาให้แกะ
+
+const API_TOKEN = String(process.env.ASHER_API_TOKEN || '').trim();
+const ALLOWED_ORIGINS = String(process.env.ASHER_ALLOWED_ORIGINS || '')
+  .split(',').map((value) => value.trim().replace(/\/$/, '')).filter(Boolean);
+
+// seed ที่ติดมากับโค้ด ไม่ได้ย้ายตาม ASHER_DATA_DIR
+const SAMPLE_COMPETITORS_FILE = path.join(ROOT, 'data', 'sample-competitors.json');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -48,12 +46,14 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2'
+  '.ico': 'image/x-icon'
 };
+
+// บีบอัดเฉพาะไฟล์ข้อความที่ใหญ่พอจะคุ้ม (app.js 32KB -> ~7KB)
+const COMPRESSIBLE = /^(?:text\/|application\/(?:json|javascript)|image\/svg)/;
+const COMPRESS_MIN_BYTES = 1024;
+
+/* ------------------------------ helpers ---------------------------- */
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -89,6 +89,24 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+/** เทียบ token แบบไม่หลุด timing — ยาวไม่เท่ากันก็ต้องใช้เวลาเท่ากัน */
+function tokenMatches(given) {
+  const a = Buffer.from(String(given || ''));
+  const b = Buffer.from(API_TOKEN);
+  if (a.length !== b.length) {
+    crypto.timingSafeEqual(b, b);
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
+}
+
+function isAuthorized(req) {
+  if (!API_TOKEN) return true;
+  const header = String(req.headers.authorization || '');
+  const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
+  return tokenMatches(bearer || req.headers['x-asher-token']);
 }
 
 /* ------------------------------ API ------------------------------ */
@@ -162,7 +180,7 @@ async function runWeakness() {
   const [asher, competitors, actions] = await Promise.all([
     store.asherStore.read(),
     store.competitorStore.read(),
-    actionStore.read()
+    store.actionStore.read()
   ]);
   return weakness.analyze({
     asherProjects: asher.projects,
@@ -175,7 +193,12 @@ async function handleApi(req, res, url) {
   const segments = url.pathname.split('/').filter(Boolean); // ['api', ...]
   const route = segments.slice(1);
 
+  // health ต้องเรียกได้โดยไม่มี token เพราะ platform ใช้เช็คว่า container ยังไหว
+  // แต่จำนวนโครงการ/คู่แข่งเป็นข้อมูลธุรกิจ บอกเฉพาะคนที่ถือ token
   if (route[0] === 'health' && req.method === 'GET') {
+    if (!isAuthorized(req)) {
+      return sendJson(res, 200, { ok: true, service: 'asher-local-api', authRequired: true });
+    }
     const [asher, competitors] = await Promise.all([
       store.asherStore.read(),
       store.competitorStore.read()
@@ -183,11 +206,17 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, {
       ok: true,
       service: 'asher-local-api',
+      authRequired: Boolean(API_TOKEN),
       projects: asher.projects.length,
       rooms: asher.projects.reduce((sum, p) => sum + p.rooms.length, 0),
       competitors: competitors.projects.length,
       updatedAt: asher.updatedAt
     });
+  }
+
+  if (!isAuthorized(req)) {
+    res.setHeader('www-authenticate', 'Bearer realm="asher"');
+    throw scraper.httpError(401, 'ต้องใส่ token — ส่งมาที่ header Authorization: Bearer <token>');
   }
 
   if (route[0] === 'asher' && route[1] === 'projects') {
@@ -235,7 +264,7 @@ async function handleApi(req, res, url) {
       throw scraper.httpError(400, `outcome ต้องเป็น ${VALID_OUTCOME.join(' / ')} หรือ null`);
     }
 
-    const actions = await actionStore.read();
+    const actions = await store.actionStore.read();
     if (body.reset) {
       delete actions.items[id];
     } else {
@@ -247,15 +276,21 @@ async function handleApi(req, res, url) {
         updatedAt: new Date().toISOString()
       };
     }
-    await actionStore.write(actions);
+    await store.actionStore.write(actions);
     return sendJson(res, 200, await runWeakness());
   }
 
-  // ปุ่ม "ใส่ข้อมูลตัวอย่าง" — ใส่คู่แข่งตัวอย่างไว้ลองระบบ
+  // ปุ่ม "ใส่ข้อมูลตัวอย่าง" — ใส่คู่แข่งตัวอย่างไว้ลองระบบ ลบทิ้งได้ผ่าน /api/competitors/:id
   if (route[0] === 'weakness' && route[1] === 'sample' && req.method === 'POST') {
+    let samples;
+    try {
+      samples = JSON.parse(await fsp.readFile(SAMPLE_COMPETITORS_FILE, 'utf8'));
+    } catch {
+      throw scraper.httpError(500, 'อ่านไฟล์คู่แข่งตัวอย่างไม่ได้');
+    }
     const db = await store.competitorStore.read();
     let added = 0;
-    for (const sample of SAMPLE_COMPETITORS) {
+    for (const sample of samples) {
       if (db.projects.some((p) => p.id === sample.id)) continue;
       db.projects.push(store.normalizeProject(sample, db.projects.length));
       added += 1;
@@ -300,12 +335,35 @@ async function handleStatic(req, res, url) {
     return res.end();
   }
 
-  res.writeHead(200, {
-    'content-type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream',
-    'content-length': stat.size,
-    'cache-control': 'no-cache'
-  });
-  fs.createReadStream(target).pipe(res);
+  // ไฟล์ไม่มี hash ในชื่อ จึงให้ revalidate ทุกครั้งแต่ตอบ 304 ตัวเปล่าเมื่อไม่มีอะไรเปลี่ยน
+  const etag = `W/"${stat.size.toString(16)}-${stat.mtimeMs.toString(16)}"`;
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, { etag, 'cache-control': 'no-cache' });
+    return res.end();
+  }
+
+  const type = MIME[path.extname(target).toLowerCase()] || 'application/octet-stream';
+  const accepts = String(req.headers['accept-encoding'] || '');
+  const gzip = COMPRESSIBLE.test(type) &&
+    stat.size >= COMPRESS_MIN_BYTES &&
+    /\bgzip\b/.test(accepts);
+
+  const headers = {
+    'content-type': type,
+    'cache-control': 'no-cache',
+    etag,
+    vary: 'accept-encoding'
+  };
+  if (gzip) headers['content-encoding'] = 'gzip';
+  else headers['content-length'] = stat.size;
+
+  res.writeHead(200, headers);
+  if (req.method === 'HEAD') return res.end();
+
+  const source = fs.createReadStream(target);
+  source.on('error', () => res.destroy());
+  if (gzip) source.pipe(zlib.createGzip()).pipe(res);
+  else source.pipe(res);
 }
 
 /* ------------------------------ server ----------------------------- */
@@ -313,10 +371,15 @@ async function handleStatic(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  // เรียกข้ามพอร์ตจากหน้า module ที่เปิดด้วย live-server ได้
-  res.setHeader('access-control-allow-origin', '*');
-  res.setHeader('access-control-allow-headers', 'content-type');
-  res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  // เรียกข้ามโดเมนได้เฉพาะ origin ที่อนุญาตไว้ — ปล่อย * ไม่ได้เพราะ API นี้ลบข้อมูลได้
+  const origin = String(req.headers.origin || '').replace(/\/$/, '');
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('access-control-allow-origin', origin);
+    res.setHeader('access-control-allow-headers', 'content-type,authorization,x-asher-token');
+    res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('access-control-max-age', '86400');
+    res.setHeader('vary', 'origin');
+  }
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
@@ -338,10 +401,45 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`ASHER local API   http://${HOST}:${PORT}/api/health`);
-  console.log(`Data input        http://${HOST}:${PORT}/modules/asher-projects/`);
-  console.log(`Data file         ${store.DATA_FILE}`);
-});
+// กัน connection ที่เปิดค้างไว้เฉย ๆ กินสล็อตของ container
+server.headersTimeout = 20000;
+server.requestTimeout = 60000;
+server.keepAliveTimeout = 5000;
+
+/** ปิดให้เรียบร้อยตอน orchestrator ส่ง SIGTERM: หยุดรับของใหม่ แล้วรอเขียนไฟล์ให้จบ */
+let closing = false;
+function shutdown(signal) {
+  if (closing) return;
+  closing = true;
+  console.log(`[asher] ได้รับ ${signal} — กำลังปิด`);
+  const force = setTimeout(() => {
+    console.error('[asher] ปิดไม่ทันใน 10 วินาที บังคับออก');
+    process.exit(1);
+  }, 10000);
+  force.unref();
+  server.close(async () => {
+    await store.flush();
+    clearTimeout(force);
+    process.exit(0);
+  });
+  server.closeIdleConnections?.();
+}
+
+if (require.main === module) {
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  server.listen(PORT, HOST, () => {
+    // PORT=0 แปลว่าให้ระบบเลือกพอร์ตว่างให้ ต้องอ่านเลขจริงจาก socket
+    const bound = server.address().port;
+    console.log(`ASHER local API   http://${HOST}:${bound}/api/health`);
+    console.log(`Data input        http://${HOST}:${bound}/modules/asher-projects/`);
+    console.log(`Data dir          ${store.DATA_DIR}`);
+    if (!API_TOKEN && HOST !== '127.0.0.1' && HOST !== 'localhost') {
+      console.warn('[asher] คำเตือน: ฟังทุก interface โดยไม่มี ASHER_API_TOKEN — ' +
+        'ใครต่อพอร์ตนี้ได้ก็แก้และลบข้อมูลได้');
+    }
+  });
+}
 
 module.exports = server;

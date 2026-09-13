@@ -9,6 +9,7 @@
 
   var DRAFT_KEY = 'asher.projects.draft.v1';
   var BASE_KEY = 'asher.apiBase';
+  var TOKEN_KEY = 'asher.apiToken';
 
   function resolveBase() {
     var fromQuery = new URLSearchParams(global.location.search).get('api');
@@ -23,7 +24,24 @@
     return global.location.origin;
   }
 
+  /** token จะมีก็ต่อเมื่อ server ตั้ง ASHER_API_TOKEN ไว้ (คือตอน deploy ออกนอกเครื่อง) */
+  function resolveToken() {
+    var fromQuery = new URLSearchParams(global.location.search).get('token');
+    if (fromQuery) {
+      try { localStorage.setItem(TOKEN_KEY, fromQuery); } catch (e) { /* โหมดส่วนตัว */ }
+      // ล้าง token ออกจากแถบที่อยู่ จะได้ไม่ติดไปกับลิงก์ที่ส่งต่อ
+      try {
+        var clean = new URL(global.location.href);
+        clean.searchParams.delete('token');
+        global.history.replaceState({}, '', clean.toString());
+      } catch (e) { /* ข้าม */ }
+      return fromQuery;
+    }
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+
   var base = resolveBase();
+  var token = resolveToken();
 
   function readDrafts() {
     try {
@@ -45,6 +63,7 @@
   async function request(path, options) {
     var opts = options || {};
     var init = { method: opts.method || 'GET', headers: {} };
+    if (token) init.headers.authorization = 'Bearer ' + token;
     if (opts.body !== undefined) {
       init.headers['content-type'] = 'application/json';
       init.body = JSON.stringify(opts.body);
@@ -66,6 +85,22 @@
 
     var payload = null;
     try { payload = await response.json(); } catch (e) { /* ตอบไม่ใช่ JSON */ }
+
+    // ถามหา token ครั้งเดียวแล้วลองใหม่ ไม่วนซ้ำถ้ากรอกผิด
+    if (response.status === 401 && !opts.retried) {
+      var entered = global.prompt('เซิร์ฟเวอร์นี้ต้องใช้ token — ขอจากผู้ดูแลระบบ');
+      if (entered) {
+        AsherAPI.setToken(entered.trim());
+        var retry = {};
+        for (var key in opts) if (Object.prototype.hasOwnProperty.call(opts, key)) retry[key] = opts[key];
+        retry.retried = true;
+        return request(path, retry);
+      }
+      var denied = new Error('ต้องใส่ token ก่อนถึงจะใช้งานได้');
+      denied.unauthorized = true;
+      throw denied;
+    }
+
     if (!response.ok) {
       throw new Error((payload && payload.error) || ('API ตอบกลับ HTTP ' + response.status));
     }
@@ -79,6 +114,17 @@
       base = String(value || '').replace(/\/$/, '');
       try { localStorage.setItem(BASE_KEY, base); } catch (e) { /* ข้าม */ }
       return base;
+    },
+
+    get hasToken() { return Boolean(token); },
+
+    setToken: function (value) {
+      token = String(value || '').trim();
+      try {
+        if (token) localStorage.setItem(TOKEN_KEY, token);
+        else localStorage.removeItem(TOKEN_KEY);
+      } catch (e) { /* ข้าม */ }
+      return token;
     },
 
     health: function () {
