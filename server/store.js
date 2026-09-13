@@ -7,7 +7,13 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+/**
+ * เก็บไฟล์ข้อมูลไว้ที่ไหน — ตั้ง ASHER_DATA_DIR ชี้ออกไปนอกโฟลเดอร์เว็บเสมอเวลา deploy
+ * (บน Hostinger การ deploy ทับจะล้างโฟลเดอร์โปรเจกต์ ข้อมูลที่อยู่ใน data/ จะหายไปด้วย)
+ */
+const DATA_DIR = process.env.ASHER_DATA_DIR
+  ? path.resolve(process.env.ASHER_DATA_DIR)
+  : path.join(__dirname, '..', 'data');
 
 const EMPTY = { version: 1, updatedAt: null, projects: [] };
 

@@ -17,11 +17,21 @@ node server/server.js          # หรือ npm start
 
 ไม่มี dependency ภายนอก ต้องการแค่ Node 18 ขึ้นไป (ใช้ global `fetch`)
 
+บนเครื่องตัวเอง (bind `127.0.0.1`) ใช้ได้เลยไม่ต้อง login
+จะเอาขึ้น host สาธารณะต้องตั้งรหัสผ่านก่อน — ดู [DEPLOY-HOSTINGER.md](DEPLOY-HOSTINGER.md)
+
+```bash
+ASHER_PASSWORD="รหัสอย่างน้อย 12 ตัว" HOST=0.0.0.0 node server/server.js
+```
+
+ถ้า bind นอก `127.0.0.1` โดยไม่ตั้ง `ASHER_PASSWORD` server จะไม่ยอมบูต (fail closed)
+
 ## โครงสร้าง
 
 | ไฟล์ | หน้าที่ |
 | --- | --- |
 | `server/server.js` | static server + JSON API (พอร์ต 8000) |
+| `server/security.js` | auth, rate limit, CORS/CSRF, security header — ใช้ตอน deploy ออกสาธารณะ |
 | `server/store.js` | อ่าน/เขียน `data/asher-projects.json` แบบ atomic + normalize ค่า |
 | `server/scraper.js` | โหลดหน้าเว็บ แปลง HTML เป็นข้อความ แล้วแกะค่าออกมา |
 | `shared/asher-theme.css` | โทนสีกลางที่ใช้ร่วมกับโมดูลอื่น |
@@ -29,6 +39,9 @@ node server/server.js          # หรือ npm start
 | `server/weakness.js` | กติกาหาจุดอ่อน + คิด severity × exploitability |
 | `modules/asher-projects/` | หน้าใส่ข้อมูล |
 | `modules/weakness-engine/` | หน้าอ้างอิงของ weakness engine (ยกไปต่อในแท็บ `#weakness` เดิมได้) |
+| `modules/login/` | หน้า login (โผล่เฉพาะตอนตั้ง `ASHER_PASSWORD` ไว้) |
+| `test/security.test.js` | ชุดทดสอบความปลอดภัย รันด้วย `npm test` |
+| `DEPLOY-HOSTINGER.md` | วิธี deploy ขึ้น Hostinger + ความเสี่ยงที่ต้องรู้ |
 | `data/asher-projects.json` | ข้อมูลฝั่งเรา |
 | `data/competitors.json` | ข้อมูลฝั่งคู่แข่ง (schema เดียวกัน) |
 | `data/weakness-actions.json` | บันทึกว่าเซลส์ใช้มุมไหน ผลเป็นยังไง |
@@ -77,6 +90,23 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 `/api/scrape` ยอมเฉพาะ `http://` / `https://` ที่ปลายทางเป็น IP สาธารณะ — ยิงเข้า `localhost`,
 `10.x`, `192.168.x`, link-local ไม่ได้ (กัน SSRF) และเช็คซ้ำทุก redirect
 ถ้าต้องดึงจาก staging ในวงแลนตัวเอง สั่ง `ASHER_ALLOW_PRIVATE_HOSTS=1 node server/server.js`
+(ห้ามเปิดบน host สาธารณะ) และต้อง login ก่อนเรียกเสมอ จำกัด 12 ครั้ง/นาที/IP
+ไม่ได้ใช้ฟีเจอร์นี้ก็ปิดไปเลยด้วย `ASHER_ENABLE_SCRAPE=0`
+
+## ความปลอดภัยตอนเปิดออกสาธารณะ
+
+| เรื่อง | ทำอะไรไว้ |
+|---|---|
+| เข้าใช้งาน | ต้อง login ด้วย `ASHER_PASSWORD` — session เป็น cookie `HttpOnly` + `SameSite=Lax` |
+| เรียกจากสคริปต์ | `Authorization: Bearer $ASHER_TOKEN` หรือ header `x-asher-token` |
+| CORS | ปิดข้ามโดเมนเป็นค่าเริ่มต้น เปิดเฉพาะที่ระบุใน `ASHER_ALLOWED_ORIGINS` |
+| CSRF | ทุกคำขอที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเอง |
+| ไฟล์ static | เสิร์ฟแค่ `/modules/` กับ `/shared/` — `data/`, `server/`, `.git/` เข้าไม่ถึง |
+| rate limit | อ่าน 240 / เขียน 60 / scrape 12 ต่อนาที/IP, login ผิดได้ 10 ครั้งต่อ 15 นาที |
+| header | CSP, `X-Frame-Options: DENY`, `nosniff`, HSTS (เมื่อเป็น HTTPS) |
+| ที่เก็บข้อมูล | `ASHER_DATA_DIR` ชี้ออกนอกโฟลเดอร์เว็บได้ กัน deploy ทับแล้วข้อมูลหาย |
+
+ตัวแปรทั้งหมดดูที่ [.env.example](.env.example) — ทดสอบว่ายังปิดสนิทด้วย `npm test`
 
 ## เวลา Local API ไม่ทำงาน
 

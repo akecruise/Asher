@@ -5,6 +5,9 @@
  *   node server/server.js            -> http://localhost:8000
  *   PORT=8080 node server/server.js
  *
+ * เอาขึ้น host สาธารณะ (Hostinger / VPS) ต้องตั้ง ASHER_PASSWORD ก่อน ไม่งั้น server
+ * จะไม่ยอมบูตเมื่อ bind นอก 127.0.0.1 — ดู DEPLOY-HOSTINGER.md
+ *
  * ไม่มี dependency ภายนอก ใช้ Node 18+ (ต้องมี global fetch)
  */
 const http = require('http');
@@ -15,6 +18,7 @@ const path = require('path');
 const store = require('./store');
 const scraper = require('./scraper');
 const weakness = require('./weakness');
+const security = require('./security');
 
 const actionStore = store.createBlobStore('weakness-actions.json', { version: 1, items: {} });
 
@@ -40,6 +44,26 @@ const PORT = Number(process.env.PORT || 8000);
 const HOST = process.env.HOST || '127.0.0.1';
 const ROOT = path.join(__dirname, '..');
 const MAX_BODY = 5 * 1024 * 1024; // เผื่อกรณีวาง HTML ทั้งหน้ามาให้แกะ
+const MAX_LOGIN_BODY = 4 * 1024;
+
+/* โควตาต่อ IP — กันคนยิงรัว ๆ จนไฟล์ข้อมูลพังหรือ host โดนระงับ */
+const LIMIT_READ = { limit: 240, windowMs: 60 * 1000 };
+const LIMIT_WRITE = { limit: 60, windowMs: 60 * 1000 };
+const LIMIT_SCRAPE = { limit: 12, windowMs: 60 * 1000 };
+const LIMIT_LOGIN = { limit: 10, windowMs: 15 * 60 * 1000 };
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** โฟลเดอร์เดียวที่ยอมเสิร์ฟเป็นไฟล์ static — data/ server/ .git/ ไม่อยู่ในนี้ */
+const STATIC_PREFIXES = ['/modules/', '/shared/'];
+/** ไฟล์ที่เปิดดูได้โดยไม่ต้อง login (หน้า login กับ theme ของมัน) */
+const PUBLIC_FILES = new Set([
+  '/modules/login/index.html',
+  '/modules/login/app.js',
+  '/shared/asher-theme.css'
+]);
+const LOGIN_PATH = '/modules/login/';
+const HOME_PATH = '/modules/asher-projects/';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -55,23 +79,25 @@ const MIME = {
   '.woff2': 'font/woff2'
 };
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, extraHeaders) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(body),
-    'cache-control': 'no-store'
+    'cache-control': 'no-store',
+    ...(extraHeaders || {})
   });
   res.end(body);
 }
 
-function readBody(req) {
+function readBody(req, maxBytes) {
+  const cap = maxBytes || MAX_BODY;
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > cap) {
         reject(scraper.httpError(413, 'ข้อมูลที่ส่งมาใหญ่เกินไป'));
         req.destroy();
         return;
@@ -89,6 +115,17 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function enforceLimit(req, rule, suffix) {
+  const key = `${suffix}:${security.clientIp(req)}`;
+  const result = security.rateLimit(key, rule.limit, rule.windowMs);
+  if (!result.ok) {
+    const err = scraper.httpError(429, 'ส่งคำขอถี่เกินไป ลองใหม่อีกครั้งในอีกสักครู่');
+    err.retryAfter = result.retryAfter;
+    throw err;
+  }
+  return key;
 }
 
 /* ------------------------------ API ------------------------------ */
@@ -171,11 +208,53 @@ async function runWeakness() {
   });
 }
 
+/** เข้าสู่ระบบ / ออกจากระบบ / ถามสถานะ — เป็น endpoint เดียวที่เรียกได้ก่อน login */
+async function handleSession(req, res) {
+  if (req.method === 'GET') {
+    return sendJson(res, 200, {
+      ok: true,
+      authRequired: security.AUTH_ENABLED,
+      authenticated: security.isAuthenticated(req)
+    });
+  }
+
+  if (req.method === 'POST') {
+    const key = enforceLimit(req, LIMIT_LOGIN, 'login');
+    const body = await readBody(req, MAX_LOGIN_BODY);
+    if (!security.AUTH_ENABLED) {
+      return sendJson(res, 200, { ok: true, authRequired: false, authenticated: true });
+    }
+    if (!security.checkPassword(body.password)) {
+      throw scraper.httpError(401, 'รหัสผ่านไม่ถูกต้อง');
+    }
+    security.resetLimit(key);
+    return sendJson(res, 200, { ok: true, authenticated: true }, {
+      'set-cookie': security.sessionCookie(req, security.createSessionValue())
+    });
+  }
+
+  if (req.method === 'DELETE') {
+    return sendJson(res, 200, { ok: true, authenticated: false }, {
+      'set-cookie': security.sessionCookie(req, '')
+    });
+  }
+
+  throw scraper.httpError(405, 'method not allowed');
+}
+
 async function handleApi(req, res, url) {
   const segments = url.pathname.split('/').filter(Boolean); // ['api', ...]
   const route = segments.slice(1);
 
+  if (route[0] === 'session' && !route[1]) {
+    return handleSession(req, res);
+  }
+
+  // health ตอบได้โดยไม่ต้อง login แต่ไม่บอกตัวเลขธุรกิจ ถ้ายังไม่ผ่าน auth
   if (route[0] === 'health' && req.method === 'GET') {
+    if (!security.isAuthenticated(req)) {
+      return sendJson(res, 200, { ok: true, service: 'asher-local-api', authRequired: true });
+    }
     const [asher, competitors] = await Promise.all([
       store.asherStore.read(),
       store.competitorStore.read()
@@ -188,6 +267,17 @@ async function handleApi(req, res, url) {
       competitors: competitors.projects.length,
       updatedAt: asher.updatedAt
     });
+  }
+
+  if (!security.isAuthenticated(req)) {
+    throw scraper.httpError(401, 'ต้องเข้าสู่ระบบก่อน');
+  }
+
+  if (WRITE_METHODS.has(req.method)) {
+    if (!security.isSafeStateChange(req)) {
+      throw scraper.httpError(403, 'คำขอข้ามโดเมนที่ไม่อนุญาต');
+    }
+    enforceLimit(req, LIMIT_WRITE, 'write');
   }
 
   if (route[0] === 'asher' && route[1] === 'projects') {
@@ -243,7 +333,7 @@ async function handleApi(req, res, url) {
       actions.items[id] = {
         status: body.status !== undefined ? body.status : previous.status,
         outcome: body.outcome !== undefined ? body.outcome : previous.outcome,
-        note: body.note !== undefined ? String(body.note) : (previous.note || ''),
+        note: body.note !== undefined ? String(body.note).slice(0, 2000) : (previous.note || ''),
         updatedAt: new Date().toISOString()
       };
     }
@@ -265,6 +355,10 @@ async function handleApi(req, res, url) {
   }
 
   if (route[0] === 'scrape' && req.method === 'POST') {
+    if (!security.SCRAPE_ENABLED) {
+      throw scraper.httpError(403, 'ปิดการดึงข้อมูลจากเว็บไซต์ไว้ (ASHER_ENABLE_SCRAPE=0)');
+    }
+    enforceLimit(req, LIMIT_SCRAPE, 'scrape');
     const body = await readBody(req);
     if (body.html) {
       return sendJson(res, 200, scraper.scrapeHtml(String(body.html), body.url));
@@ -279,51 +373,93 @@ async function handleApi(req, res, url) {
 
 /* --------------------------- static files -------------------------- */
 
+function redirect(res, location) {
+  res.writeHead(302, { location, 'cache-control': 'no-store' });
+  res.end();
+}
+
+function notFound(res) {
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+  res.end('404 Not Found');
+}
+
+/**
+ * เสิร์ฟเฉพาะ /modules/ กับ /shared/ เท่านั้น (allowlist)
+ * ของเดิมเสิร์ฟทั้ง repo — เท่ากับเปิดให้โหลด data/*.json, server/*.js และ .git/ ได้ตรง ๆ
+ */
 async function handleStatic(req, res, url) {
-  let pathname = decodeURIComponent(url.pathname);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    return notFound(res);
+  }
+
+  if (pathname === '/' || pathname === '/index.html') return redirect(res, HOME_PATH);
+  if (pathname === '/login' || pathname === '/login/') return redirect(res, LOGIN_PATH);
+
+  if (pathname.includes('\0')) return notFound(res);
+  // ห้ามแตะไฟล์/โฟลเดอร์ที่ขึ้นต้นด้วยจุด (.git, .env ฯลฯ)
+  if (pathname.split('/').some((segment) => segment.startsWith('.'))) return notFound(res);
+  if (!STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return notFound(res);
+
   if (pathname.endsWith('/')) pathname += 'index.html';
+
   const target = path.join(ROOT, pathname);
   const relative = path.relative(ROOT, target);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     return sendJson(res, 403, { ok: false, error: 'forbidden' });
   }
 
+  if (!PUBLIC_FILES.has(pathname) && !security.isAuthenticated(req)) {
+    return redirect(res, `${LOGIN_PATH}?next=${encodeURIComponent(url.pathname)}`);
+  }
+
   let stat;
   try {
     stat = await fsp.stat(target);
   } catch {
-    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-    return res.end('404 Not Found');
+    return notFound(res);
   }
-  if (stat.isDirectory()) {
-    res.writeHead(302, { location: `${pathname.replace(/\/$/, '')}/` });
-    return res.end();
-  }
+  if (stat.isDirectory()) return redirect(res, `${pathname.replace(/\/$/, '')}/`);
+  if (!stat.isFile()) return notFound(res);
 
   res.writeHead(200, {
     'content-type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream',
     'content-length': stat.size,
-    'cache-control': 'no-cache'
+    'cache-control': 'no-store'
   });
+  if (req.method === 'HEAD') return res.end();
   fs.createReadStream(target).pipe(res);
 }
 
 /* ------------------------------ server ----------------------------- */
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+    return res.end('400 Bad Request');
+  }
 
-  // เรียกข้ามพอร์ตจากหน้า module ที่เปิดด้วย live-server ได้
-  res.setHeader('access-control-allow-origin', '*');
-  res.setHeader('access-control-allow-headers', 'content-type');
-  res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  for (const [name, value] of Object.entries(security.securityHeaders(req))) {
+    res.setHeader(name, value);
+  }
+  // CORS: default = same-origin เท่านั้น จะเปิดข้ามโดเมนต้องระบุใน ASHER_ALLOWED_ORIGINS
+  for (const [name, value] of Object.entries(security.corsHeaders(req))) {
+    res.setHeader(name, value);
+  }
+
   if (req.method === 'OPTIONS') {
-    res.writeHead(204);
+    res.writeHead(security.isAllowedOrigin(req, req.headers.origin) ? 204 : 403);
     return res.end();
   }
 
   try {
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+      enforceLimit(req, LIMIT_READ, 'api');
       await handleApi(req, res, url);
     } else if (req.method === 'GET' || req.method === 'HEAD') {
       await handleStatic(req, res, url);
@@ -334,14 +470,53 @@ const server = http.createServer(async (req, res) => {
     if (res.headersSent) return;
     const status = err.status || 500;
     if (status >= 500) console.error(`[asher] ${req.method} ${url.pathname}`, err);
-    sendJson(res, status, { ok: false, error: err.message || 'internal error' });
+    // 500 ไม่บอกรายละเอียดข้างในออกไปข้างนอก
+    const message = status >= 500 ? 'internal error' : (err.message || 'error');
+    sendJson(res, status, { ok: false, error: message },
+      err.retryAfter ? { 'retry-after': String(err.retryAfter) } : undefined);
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`ASHER local API   http://${HOST}:${PORT}/api/health`);
-  console.log(`Data input        http://${HOST}:${PORT}/modules/asher-projects/`);
-  console.log(`Data file         ${store.DATA_FILE}`);
-});
+// อยู่หลัง reverse proxy: ให้ keep-alive ของเรานานกว่าของ proxy กัน 502 เป็นช่วง ๆ
+server.keepAliveTimeout = 65 * 1000;
+server.headersTimeout = 70 * 1000;
+server.requestTimeout = 60 * 1000;
+
+function start() {
+  let warnings;
+  try {
+    warnings = security.assertSafeConfig({ host: HOST });
+  } catch (err) {
+    console.error(`\n[asher] เริ่ม server ไม่ได้:\n${err.message}\n`);
+    process.exit(1);
+  }
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[asher] พอร์ต ${PORT} ถูกใช้อยู่แล้ว — ลอง PORT=8080 node server/server.js`);
+    } else {
+      console.error('[asher] server error', err);
+    }
+    process.exit(1);
+  });
+
+  server.listen(PORT, HOST, () => {
+    console.log(`ASHER local API   http://${HOST}:${PORT}/api/health`);
+    console.log(`Data input        http://${HOST}:${PORT}${HOME_PATH}`);
+    console.log(`Data dir          ${store.DATA_DIR}`);
+    console.log(`Auth              ${security.AUTH_ENABLED ? 'เปิด (ต้อง login)' : 'ปิด — localhost เท่านั้น'}`);
+    for (const warning of warnings) console.warn(`[asher] ${warning}`);
+  });
+
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+    });
+  }
+}
+
+if (require.main === module) start();
 
 module.exports = server;
+module.exports.start = start;

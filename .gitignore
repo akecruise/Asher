@@ -3,3 +3,7 @@ node_modules/
 data/*.tmp-*
 data/*.corrupt-*
 .DS_Store
+
+.env
+.env.*
+!.env.example
