@@ -17,49 +17,16 @@ node server/server.js          # หรือ npm start
 
 ไม่มี dependency ภายนอก ต้องการแค่ Node 18 ขึ้นไป (ใช้ global `fetch`)
 
-บนเครื่องตัวเอง (bind `127.0.0.1`) ใช้ได้เลยไม่ต้อง login
-จะเอาขึ้น host สาธารณะต้องมีผู้ใช้อย่างน้อยหนึ่งคนก่อน — ดู [DEPLOY-HOSTINGER.md](DEPLOY-HOSTINGER.md)
-
-```bash
-npm run user -- add you@example.com     # สุ่มรหัสผ่านให้ แสดงครั้งเดียว
-HOST=0.0.0.0 node server/server.js
-```
-
-ถ้า bind นอก `127.0.0.1` โดยไม่มีผู้ใช้และไม่ตั้ง `ASHER_PASSWORD` server จะไม่ยอมบูต (fail closed)
-
-## ผู้ใช้ระบบ
-
-```bash
-npm run user -- list
-npm run user -- add aplusmkteam@gmail.com                  # สุ่มรหัสผ่านให้
-npm run user -- add someone@example.com --password "..."   # กำหนดเอง
-npm run user -- passwd aplusmkteam@gmail.com               # เปลี่ยนรหัสผ่าน
-npm run user -- remove aplusmkteam@gmail.com               # ลบผู้ใช้
-```
-
-- รหัสผ่านเก็บเป็น scrypt hash ใน `users.json` (สิทธิ์ไฟล์ 0600) ที่ `ASHER_DATA_DIR` ไม่เก็บรหัสจริงที่ไหนเลย
-- **เปลี่ยนรหัสผ่านหรือลบผู้ใช้ = session ของคนนั้นตายทันที** ไม่ต้อง restart
-- ทุกครั้งที่บันทึกโครงการ ระบบจดว่า `updatedBy` เป็นใคร และการลบโครงการจะขึ้น log ฝั่ง server
-- รันคำสั่งพวกนี้บนเครื่อง/เซิร์ฟเวอร์เดียวกับที่เก็บข้อมูล และตั้ง `ASHER_DATA_DIR` ให้ตรงกับตอนรัน server
-
-โหมด auth มี 3 แบบ ระบบเลือกให้เอง:
-
-| มีอะไรอยู่ | โหมด | หน้า login |
-| --- | --- | --- |
-| มีผู้ใช้ใน `users.json` | เข้าด้วยอีเมล + รหัสผ่าน | มีช่องอีเมล |
-| ไม่มีผู้ใช้ แต่ตั้ง `ASHER_PASSWORD` | รหัสผ่านเดียว | มีแต่ช่องรหัสผ่าน |
-| ไม่มีทั้งคู่ | ไม่มี auth (เฉพาะ localhost) | ไม่มีหน้า login |
-
-ตั้งทั้งสองอย่างพร้อมกันได้ — `ASHER_PASSWORD` จะกลายเป็นรหัสฉุกเฉินไว้กู้ระบบตอนถูกล็อกออก
+**ระบบนี้ไม่มี login และตั้งใจให้รันบนเครื่องตัวเองเท่านั้น** — ระบบ login อยู่ที่ ASHER Connect
+ไม่ได้อยู่ที่นี่ ถ้าสั่งให้ bind นอก `127.0.0.1` server จะไม่ยอมบูต (fail closed) กันเผลอเปิดออกอินเทอร์เน็ต
 
 ## โครงสร้าง
 
 | ไฟล์ | หน้าที่ |
 | --- | --- |
 | `server/server.js` | static server + JSON API (พอร์ต 8000) |
-| `server/security.js` | auth, rate limit, CORS/CSRF, security header — ใช้ตอน deploy ออกสาธารณะ |
-| `server/users.js` | ผู้ใช้ระบบ + scrypt hash เก็บใน `users.json` |
-| `bin/asher-user.js` | CLI เพิ่ม/ลบ/เปลี่ยนรหัสผ่านผู้ใช้ (`npm run user -- ...`) |
+| `server/security.js` | rate limit, CORS/CSRF, security header, กันเผลอเปิดออกอินเทอร์เน็ต |
+| `server/env.js` | อ่าน `.env` ที่รากโปรเจกต์ (ไม่ต้องลง dotenv) |
 | `server/store.js` | อ่าน/เขียน `data/asher-projects.json` แบบ atomic + normalize ค่า |
 | `server/scraper.js` | โหลดหน้าเว็บ แปลง HTML เป็นข้อความ แล้วแกะค่าออกมา |
 | `shared/asher-theme.css` | โทนสีกลางที่ใช้ร่วมกับโมดูลอื่น |
@@ -67,9 +34,7 @@ npm run user -- remove aplusmkteam@gmail.com               # ลบผู้ใ�
 | `server/weakness.js` | กติกาหาจุดอ่อน + คิด severity × exploitability |
 | `modules/asher-projects/` | หน้าใส่ข้อมูล |
 | `modules/weakness-engine/` | หน้าอ้างอิงของ weakness engine (ยกไปต่อในแท็บ `#weakness` เดิมได้) |
-| `modules/login/` | หน้า login (โผล่เฉพาะตอนตั้ง `ASHER_PASSWORD` ไว้) |
-| `test/security.test.js` | ชุดทดสอบความปลอดภัย รันด้วย `npm test` |
-| `DEPLOY-HOSTINGER.md` | วิธี deploy ขึ้น Hostinger + ความเสี่ยงที่ต้องรู้ |
+| `test/security.test.js` | ชุดทดสอบการกันพลาด รันด้วย `npm test` |
 | `data/asher-projects.json` | ข้อมูลฝั่งเรา |
 | `data/competitors.json` | ข้อมูลฝั่งคู่แข่ง (schema เดียวกัน) |
 | `data/weakness-actions.json` | บันทึกว่าเซลส์ใช้มุมไหน ผลเป็นยังไง |
@@ -118,26 +83,28 @@ Scraper อ่าน HTML ที่ server ส่งมาเท่านั้�
 `/api/scrape` ยอมเฉพาะ `http://` / `https://` ที่ปลายทางเป็น IP สาธารณะ — ยิงเข้า `localhost`,
 `10.x`, `192.168.x`, link-local ไม่ได้ (กัน SSRF) และเช็คซ้ำทุก redirect
 ถ้าต้องดึงจาก staging ในวงแลนตัวเอง สั่ง `ASHER_ALLOW_PRIVATE_HOSTS=1 node server/server.js`
-(ห้ามเปิดบน host สาธารณะ) และต้อง login ก่อนเรียกเสมอ จำกัด 12 ครั้ง/นาที/IP
-ไม่ได้ใช้ฟีเจอร์นี้ก็ปิดไปเลยด้วย `ASHER_ENABLE_SCRAPE=0`
+จำกัด 12 ครั้ง/นาที ไม่ได้ใช้ฟีเจอร์นี้ก็ปิดไปเลยด้วย `ASHER_ENABLE_SCRAPE=0`
 
-## ความปลอดภัยตอนเปิดออกสาธารณะ
+## การกันพลาดที่ยังมีอยู่
+
+ถึงจะรันแค่บนเครื่องตัวเอง server ก็ยังกันเรื่องพวกนี้ให้ (ไม่ได้ทำให้ใช้งานยากขึ้นเลย):
 
 | เรื่อง | ทำอะไรไว้ |
 |---|---|
-| เข้าใช้งาน | ต้อง login ด้วยอีเมล + รหัสผ่านรายคน — session เป็น cookie `HttpOnly` + `SameSite=Lax` |
-| รหัสผ่าน | scrypt (N=16384) + salt ต่อคน · เปลี่ยน/ลบผู้ใช้แล้ว session เก่าตายทันที |
-| เรียกจากสคริปต์ | `Authorization: Bearer $ASHER_TOKEN` หรือ header `x-asher-token` |
-| CORS | ปิดข้ามโดเมนเป็นค่าเริ่มต้น เปิดเฉพาะที่ระบุใน `ASHER_ALLOWED_ORIGINS` |
-| CSRF | ทุกคำขอที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเอง |
-| ไฟล์ static | เสิร์ฟแค่ `/modules/` กับ `/shared/` — `data/`, `server/`, `.git/` เข้าไม่ถึง |
-| rate limit | อ่าน 240 / เขียน 60 / scrape 12 ต่อนาที/IP, login ผิดได้ 10 ครั้ง/15 นาที/IP และ 20 ครั้ง/15 นาที/บัญชี |
-| header | CSP, `X-Frame-Options: DENY`, `nosniff`, HSTS (เมื่อเป็น HTTPS), `X-Robots-Tag: noindex` |
-| bot | `robots.txt` ปิดทั้งเว็บ · login ที่ล้มเหลวขึ้น log พร้อม IP · ปลอม `X-Forwarded-For` หลบ rate limit ไม่ได้ |
-| ตั้งค่า | อ่าน `.env` ที่รากโปรเจกต์ให้เอง (ไม่ต้องลง dotenv) — ค่าใน environment จริงชนะเสมอ |
-| ที่เก็บข้อมูล | `ASHER_DATA_DIR` ชี้ออกนอกโฟลเดอร์เว็บได้ กัน deploy ทับแล้วข้อมูลหาย |
+| เปิดออกอินเทอร์เน็ต | bind นอก `127.0.0.1` ไม่ได้ ต้องยืนยันด้วย `ASHER_ALLOW_INSECURE=1` เท่านั้น |
+| ไฟล์ static | เสิร์ฟแค่ `/modules/` กับ `/shared/` — `data/`, `server/`, `.git/`, `.env` เข้าไม่ถึง |
+| CORS | ปิดข้ามโดเมนเป็นค่าเริ่มต้น (ของเดิมเปิด `*` = เว็บไหนก็สั่ง API บนเครื่องเราได้) |
+| CSRF | คำขอที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเอง |
+| rate limit | อ่าน 240 / เขียน 60 / scrape 12 ต่อนาที กันสคริปต์หลุดยิงรัวจนไฟล์ข้อมูลพัง |
+| SSRF | `/api/scrape` ยิงเข้า network ภายในไม่ได้ |
+| header | CSP, `X-Frame-Options: DENY`, `nosniff`, `X-Robots-Tag: noindex` + `robots.txt` |
+| ที่เก็บข้อมูล | `ASHER_DATA_DIR` ย้ายไฟล์ข้อมูลออกไปไว้นอกโฟลเดอร์โปรเจกต์ได้ |
+| ตั้งค่า | อ่าน `.env` ที่รากโปรเจกต์ให้เอง — ค่าใน environment จริงชนะเสมอ |
 
-ตัวแปรทั้งหมดดูที่ [.env.example](.env.example) — ทดสอบว่ายังปิดสนิทด้วย `npm test`
+ตัวแปรทั้งหมดดูที่ [.env.example](.env.example) — ตรวจว่ายังกันได้อยู่ด้วย `npm test`
+
+> อยากเอาระบบนี้ขึ้น host จริงเมื่อไหร่ ต้องใส่ระบบ login กลับเข้าไปก่อน
+> ของเดิม (login ด้วยอีเมล + รหัสผ่านรายคน) อยู่ใน git commit `6ac878e`
 
 ## เวลา Local API ไม่ทำงาน
 

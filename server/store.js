@@ -79,8 +79,7 @@ function normalizeProject(raw, index) {
   if (!project.name) project.name = project.id;
   if (!project.status) project.status = 'selling';
 
-  // ใครแก้ล่าสุด/เมื่อไหร่ — เก็บไว้เฉย ๆ ให้ดูย้อนหลังได้ตอนใช้กันหลายคน
-  project.updatedBy = str(raw && raw.updatedBy);
+  // แก้ล่าสุดเมื่อไหร่ — เก็บไว้เฉย ๆ ให้ดูย้อนหลังได้
   project.updatedAt = str(raw && raw.updatedAt) || null;
 
   project.facilities = Array.isArray(raw && raw.facilities)

@@ -5,8 +5,8 @@
  *   node server/server.js            -> http://localhost:8000
  *   PORT=8080 node server/server.js
  *
- * เอาขึ้น host สาธารณะ (Hostinger / VPS) ต้องตั้ง ASHER_PASSWORD ก่อน ไม่งั้น server
- * จะไม่ยอมบูตเมื่อ bind นอก 127.0.0.1 — ดู DEPLOY-HOSTINGER.md
+ * ระบบนี้ไม่มี login — ตั้งใจให้รันบนเครื่องตัวเองเท่านั้น (ระบบ login อยู่ที่ ASHER Connect)
+ * ถ้า bind นอก 127.0.0.1 server จะไม่ยอมบูต กันเผลอเปิดออกอินเทอร์เน็ต
  *
  * ไม่มี dependency ภายนอก ใช้ Node 18+ (ต้องมี global fetch)
  */
@@ -21,7 +21,6 @@ const store = require('./store');
 const scraper = require('./scraper');
 const weakness = require('./weakness');
 const security = require('./security');
-const users = require('./users');
 
 const actionStore = store.createBlobStore('weakness-actions.json', { version: 1, items: {} });
 
@@ -47,27 +46,16 @@ const PORT = Number(process.env.PORT || 8000);
 const HOST = process.env.HOST || '127.0.0.1';
 const ROOT = path.join(__dirname, '..');
 const MAX_BODY = 5 * 1024 * 1024; // เผื่อกรณีวาง HTML ทั้งหน้ามาให้แกะ
-const MAX_LOGIN_BODY = 4 * 1024;
 
-/* โควตาต่อ IP — กันคนยิงรัว ๆ จนไฟล์ข้อมูลพังหรือ host โดนระงับ */
+/* โควตาต่อ IP — กันสคริปต์หลุดยิงรัว ๆ จนไฟล์ข้อมูลพัง */
 const LIMIT_READ = { limit: 240, windowMs: 60 * 1000 };
 const LIMIT_WRITE = { limit: 60, windowMs: 60 * 1000 };
 const LIMIT_SCRAPE = { limit: 12, windowMs: 60 * 1000 };
-const LIMIT_LOGIN = { limit: 10, windowMs: 15 * 60 * 1000 };
-/** กันคนกระจาย IP มาเดารหัสของบัญชีเดียว — นับแยกตามอีเมล */
-const LIMIT_LOGIN_ACCOUNT = { limit: 20, windowMs: 15 * 60 * 1000 };
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /** โฟลเดอร์เดียวที่ยอมเสิร์ฟเป็นไฟล์ static — data/ server/ .git/ ไม่อยู่ในนี้ */
 const STATIC_PREFIXES = ['/modules/', '/shared/'];
-/** ไฟล์ที่เปิดดูได้โดยไม่ต้อง login (หน้า login กับ theme ของมัน) */
-const PUBLIC_FILES = new Set([
-  '/modules/login/index.html',
-  '/modules/login/app.js',
-  '/shared/asher-theme.css'
-]);
-const LOGIN_PATH = '/modules/login/';
 const HOME_PATH = '/modules/asher-projects/';
 
 const MIME = {
@@ -139,13 +127,9 @@ function enforceLimitKey(key, rule) {
 /* ------------------------------ API ------------------------------ */
 
 /** CRUD ของคอลเลกชันโครงการ — ใช้ร่วมกันทั้งฝั่ง ASHER และฝั่งคู่แข่ง */
-async function handleProjectCollection(req, res, projectStore, id, identity) {
-  /** ประทับว่าใครแก้ล่าสุด — มีความหมายตอนใช้กันหลายคน */
-  const stamp = (raw) => ({
-    ...raw,
-    updatedBy: identity ? identity.id : '',
-    updatedAt: new Date().toISOString()
-  });
+async function handleProjectCollection(req, res, projectStore, id) {
+  /** ประทับเวลาที่แก้ล่าสุดไว้ในตัวโครงการเอง */
+  const stamp = (raw) => ({ ...raw, updatedAt: new Date().toISOString() });
 
   if (!id && req.method === 'GET') {
     const db = await projectStore.read();
@@ -203,7 +187,7 @@ async function handleProjectCollection(req, res, projectStore, id, identity) {
     if (index === -1) throw scraper.httpError(404, `ไม่พบโครงการ "${id}"`);
     db.projects.splice(index, 1);
     const saved = await projectStore.write(db);
-    console.log(`[asher] ${identity ? identity.id : 'unknown'} ลบโครงการ ${id}`);
+    console.log(`[asher] ลบโครงการ ${id}`);
     sendJson(res, 200, { ok: true, deleted: id, updatedAt: saved.updatedAt });
     return true;
   }
@@ -224,71 +208,11 @@ async function runWeakness() {
   });
 }
 
-/** เข้าสู่ระบบ / ออกจากระบบ / ถามสถานะ — เป็น endpoint เดียวที่เรียกได้ก่อน login */
-async function handleSession(req, res) {
-  if (req.method === 'GET') {
-    const identity = security.authenticate(req);
-    return sendJson(res, 200, {
-      ok: true,
-      mode: security.authMode(),
-      authRequired: security.authRequired(),
-      authenticated: Boolean(identity),
-      user: identity ? identity.id : null
-    });
-  }
-
-  if (req.method === 'POST') {
-    const ipKey = enforceLimit(req, LIMIT_LOGIN, 'login');
-    const body = await readBody(req, MAX_LOGIN_BODY);
-    if (!security.authRequired()) {
-      return sendJson(res, 200, { ok: true, authRequired: false, authenticated: true });
-    }
-
-    const email = users.normalizeEmail(body.email);
-    const accountKey = email ? `login-account:${email}` : null;
-    if (accountKey) enforceLimitKey(accountKey, LIMIT_LOGIN_ACCOUNT);
-
-    const identity = security.login(email, body.password);
-    if (!identity) {
-      // จด log ไว้ดูว่ามีใครพยายามเดารหัสไหม (ไม่จดรหัสที่ลองแน่นอน)
-      console.warn(`[asher] login ล้มเหลว ${email || '(ไม่ระบุอีเมล)'} จาก ${security.clientIp(req)}`);
-      // ข้อความเดียวกันทั้งกรณีอีเมลผิดและรหัสผิด จะได้ไม่บอกว่าอีเมลไหนมีในระบบ
-      throw scraper.httpError(401, security.authMode() === 'users'
-        ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
-        : 'รหัสผ่านไม่ถูกต้อง');
-    }
-
-    security.resetLimit(ipKey);
-    if (accountKey) security.resetLimit(accountKey);
-    if (identity.kind === 'user') users.touchLogin(identity.id);
-
-    return sendJson(res, 200, { ok: true, authenticated: true, user: identity.id }, {
-      'set-cookie': security.sessionCookie(req, security.createSessionValue(identity))
-    });
-  }
-
-  if (req.method === 'DELETE') {
-    return sendJson(res, 200, { ok: true, authenticated: false }, {
-      'set-cookie': security.sessionCookie(req, '')
-    });
-  }
-
-  throw scraper.httpError(405, 'method not allowed');
-}
-
 async function handleApi(req, res, url) {
   const segments = url.pathname.split('/').filter(Boolean); // ['api', ...]
   const route = segments.slice(1);
 
-  if (route[0] === 'session' && !route[1]) {
-    return handleSession(req, res);
-  }
-
-  // health ตอบได้โดยไม่ต้อง login แต่ไม่บอกตัวเลขธุรกิจ ถ้ายังไม่ผ่าน auth
   if (route[0] === 'health' && req.method === 'GET') {
-    if (!security.isAuthenticated(req)) {
-      return sendJson(res, 200, { ok: true, service: 'asher-local-api', authRequired: true });
-    }
     const [asher, competitors] = await Promise.all([
       store.asherStore.read(),
       store.competitorStore.read()
@@ -303,11 +227,6 @@ async function handleApi(req, res, url) {
     });
   }
 
-  const identity = security.authenticate(req);
-  if (!identity) {
-    throw scraper.httpError(401, 'ต้องเข้าสู่ระบบก่อน');
-  }
-
   if (WRITE_METHODS.has(req.method)) {
     if (!security.isSafeStateChange(req)) {
       throw scraper.httpError(403, 'คำขอข้ามโดเมนที่ไม่อนุญาต');
@@ -316,11 +235,11 @@ async function handleApi(req, res, url) {
   }
 
   if (route[0] === 'asher' && route[1] === 'projects') {
-    if (await handleProjectCollection(req, res, store.asherStore, route[2], identity)) return;
+    if (await handleProjectCollection(req, res, store.asherStore, route[2])) return;
   }
 
   if (route[0] === 'competitors') {
-    if (await handleProjectCollection(req, res, store.competitorStore, route[1], identity)) return;
+    if (await handleProjectCollection(req, res, store.competitorStore, route[1])) return;
   }
 
   // ให้โมดูลอื่น (เช่น weakness engine) ดึงห้องทั้งหมดแบบแบน ๆ ไปใช้พิสูจน์ว่าเราชนะ
@@ -369,7 +288,6 @@ async function handleApi(req, res, url) {
         status: body.status !== undefined ? body.status : previous.status,
         outcome: body.outcome !== undefined ? body.outcome : previous.outcome,
         note: body.note !== undefined ? String(body.note).slice(0, 2000) : (previous.note || ''),
-        updatedBy: identity.id,
         updatedAt: new Date().toISOString()
       };
     }
@@ -443,7 +361,6 @@ async function handleStatic(req, res, url) {
   }
 
   if (pathname === '/' || pathname === '/index.html') return redirect(res, HOME_PATH);
-  if (pathname === '/login' || pathname === '/login/') return redirect(res, LOGIN_PATH);
 
   if (pathname.includes('\0')) return notFound(res);
   // ห้ามแตะไฟล์/โฟลเดอร์ที่ขึ้นต้นด้วยจุด (.git, .env ฯลฯ)
@@ -456,10 +373,6 @@ async function handleStatic(req, res, url) {
   const relative = path.relative(ROOT, target);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     return sendJson(res, 403, { ok: false, error: 'forbidden' });
-  }
-
-  if (!PUBLIC_FILES.has(pathname) && !security.isAuthenticated(req)) {
-    return redirect(res, `${LOGIN_PATH}?next=${encodeURIComponent(url.pathname)}`);
   }
 
   let stat;
@@ -551,11 +464,7 @@ function start() {
     console.log(`ASHER local API   http://${HOST}:${PORT}/api/health`);
     console.log(`Data input        http://${HOST}:${PORT}${HOME_PATH}`);
     console.log(`Data dir          ${store.DATA_DIR}`);
-    const mode = security.authMode();
-    const label = mode === 'users'
-      ? `เข้าด้วยอีเมล (${users.count()} ผู้ใช้)`
-      : (mode === 'password' ? 'รหัสผ่านเดียว (ASHER_PASSWORD)' : 'ปิด — localhost เท่านั้น');
-    console.log(`Auth              ${label}`);
+    console.log(`Login             ไม่มี — ระบบนี้ใช้บนเครื่องตัวเองเท่านั้น`);
     for (const warning of warnings) console.warn(`[asher] ${warning}`);
   });
 

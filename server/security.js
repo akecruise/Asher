@@ -1,16 +1,13 @@
 'use strict';
 /**
- * ชั้นความปลอดภัยสำหรับตอนเอาขึ้น host สาธารณะ (Hostinger / VPS)
+ * ชั้นความปลอดภัยของ ASHER Marketing Intelligence
  *
- * ของเดิมออกแบบมาให้รันบนเครื่องตัวเอง (127.0.0.1) — พอเปิดออกอินเทอร์เน็ต
- * ใครก็ตามที่เดา URL ถูกจะอ่าน/แก้/ลบข้อมูลโครงการกับข้อมูลคู่แข่งได้ทันที
- * ไฟล์นี้รวม auth + rate limit + header ความปลอดภัย + นโยบาย CORS ไว้ที่เดียว
+ * โปรเจกต์นี้ตั้งใจให้รันบนเครื่องตัวเอง (localhost) เท่านั้น — ระบบ login อยู่ที่
+ * ASHER Connect ไม่ได้อยู่ที่นี่ ที่เหลือในไฟล์นี้จึงเป็นการกันพลาดล้วน ๆ:
+ * ไม่เผลอเปิดออกอินเทอร์เน็ต, ไม่เผลอเสิร์ฟไฟล์ที่ไม่ควรเสิร์ฟ, ไม่ให้เว็บอื่นยิง API เรา
  *
- * ไม่มี dependency ภายนอก ใช้ crypto ของ Node เท่านั้น
+ * ไม่มี dependency ภายนอก
  */
-const crypto = require('crypto');
-
-const users = require('./users');
 
 /* ------------------------------ config ------------------------------ */
 
@@ -22,45 +19,8 @@ function flag(name, fallback) {
   return TRUTHY.has(String(raw).trim().toLowerCase());
 }
 
-/** รหัสผ่านสำหรับคนเข้าหน้าเว็บ (login แล้วได้ cookie) */
-const PASSWORD = String(process.env.ASHER_PASSWORD || '').trim();
-/** token สำหรับเรียก API จากสคริปต์/โมดูลอื่น (Authorization: Bearer ...) */
-const TOKEN = String(process.env.ASHER_TOKEN || '').trim();
-/** ชื่อที่ใช้แทนคนที่ login ด้วย ASHER_PASSWORD (โหมดรหัสผ่านเดียว / รหัสฉุกเฉิน) */
-const ADMIN_ID = String(process.env.ASHER_ADMIN_EMAIL || 'admin').trim().toLowerCase();
-
-const MIN_SECRET_LENGTH = 12;
-
-/**
- * มีผู้ใช้ใน users.json = โหมดหลายคน (login ด้วยอีเมล)
- * ไม่มี แต่ตั้ง ASHER_PASSWORD = โหมดรหัสผ่านเดียว
- * ไม่มีทั้งคู่ = ไม่มี auth (ใช้ได้เฉพาะ localhost)
- */
-function authMode() {
-  if (users.count() > 0) return 'users';
-  if (PASSWORD || TOKEN) return 'password';
-  return 'none';
-}
-
-function authRequired() {
-  return authMode() !== 'none';
-}
-
-const SESSION_COOKIE = 'asher_session';
-const SESSION_HOURS = Math.min(Math.max(Number(process.env.ASHER_SESSION_HOURS || 12), 1), 24 * 30);
-const SESSION_TTL_MS = SESSION_HOURS * 60 * 60 * 1000;
-
-/**
- * secret ของ cookie: ถ้าไม่ตั้งเอง จะ derive จากรหัสผ่าน/token
- * ทำแบบ deterministic เพื่อให้ session ไม่หลุดตอน restart process (Hostinger restart บ่อย)
- * ผลข้างเคียงที่ตั้งใจ: เปลี่ยนรหัสผ่านเมื่อไหร่ session เก่าตายหมดทันที
- */
-const SESSION_SECRET = process.env.ASHER_SESSION_SECRET
-  ? Buffer.from(String(process.env.ASHER_SESSION_SECRET))
-  : crypto.createHash('sha256').update(`asher-session|${PASSWORD}|${TOKEN}`).digest();
-
 const TRUST_PROXY = flag('ASHER_TRUST_PROXY', false);
-/** มี proxy กี่ชั้นหน้า Node (Hostinger/Nginx = 1, +Cloudflare = 2) */
+/** มี proxy กี่ชั้นหน้า Node (ใช้เฉพาะตอนตั้ง ASHER_TRUST_PROXY=1) */
 const PROXY_HOPS = Math.max(1, Math.min(Number(process.env.ASHER_PROXY_HOPS || 1), 5));
 const ALLOW_INSECURE = flag('ASHER_ALLOW_INSECURE', false);
 const SCRAPE_ENABLED = flag('ASHER_ENABLE_SCRAPE', true);
@@ -80,193 +40,39 @@ function isLoopbackHost(host) {
 /* --------------------------- ตรวจ config ตอนบูต --------------------------- */
 
 /**
- * ตรวจว่า config ปลอดภัยพอจะเปิดออกสาธารณะไหม
- * คืน warning เป็น array, โยน Error ถ้าอันตรายจริง ๆ (fail closed — ไม่ยอมบูต)
+ * ระบบนี้ไม่มี login — เปิดออกอินเทอร์เน็ตเมื่อไหร่คือใครก็แก้/ลบข้อมูลได้
+ * เลยไม่ยอมบูตถ้า bind นอก localhost (fail closed)
  */
 function assertSafeConfig({ host }) {
   const warnings = [];
   const publicBind = !isLoopbackHost(host);
-  const authOn = authRequired();
 
-  if (authOn) {
-    if (PASSWORD && PASSWORD.length < MIN_SECRET_LENGTH) {
-      throw new Error(
-        `ASHER_PASSWORD สั้นเกินไป (ต้องอย่างน้อย ${MIN_SECRET_LENGTH} ตัวอักษร) — ` +
-        'สุ่มด้วย: node -e "console.log(require(\'crypto\').randomBytes(24).toString(\'base64url\'))"'
-      );
-    }
-    if (TOKEN && TOKEN.length < MIN_SECRET_LENGTH) {
-      throw new Error(`ASHER_TOKEN สั้นเกินไป (ต้องอย่างน้อย ${MIN_SECRET_LENGTH} ตัวอักษร)`);
-    }
-  } else if (publicBind && !ALLOW_INSECURE) {
+  if (publicBind && !ALLOW_INSECURE) {
     throw new Error(
-      `ปฏิเสธการเปิด server ที่ ${host} โดยไม่มีรหัสผ่าน — ข้อมูลโครงการและข้อมูลคู่แข่งจะเปิดให้ใครก็แก้ได้\n` +
-      '  ตั้ง ASHER_PASSWORD="..." (และ/หรือ ASHER_TOKEN="...") ก่อนเริ่ม server\n' +
-      '  ถ้าอยู่หลัง firewall จริง ๆ และยอมรับความเสี่ยงเอง ใช้ ASHER_ALLOW_INSECURE=1'
+      `ปฏิเสธการเปิด server ที่ ${host} — ระบบนี้ไม่มี login ออกแบบมาให้รันบนเครื่องตัวเองเท่านั้น\n` +
+      '  ถ้าต้องการให้คนอื่นเข้าถึงได้ ต้องมีระบบ login ก่อน (ของเดิมอยู่ใน git commit 6ac878e)\n' +
+      '  ยืนยันว่าอยู่หลัง firewall จริงและรับความเสี่ยงเอง ใช้ ASHER_ALLOW_INSECURE=1'
     );
   }
-
-  if (!authOn && publicBind) {
-    warnings.push('!! เปิดสาธารณะโดยไม่มี auth (ASHER_ALLOW_INSECURE=1) — ใครก็ลบข้อมูลได้');
+  if (publicBind) {
+    warnings.push('!! เปิดออกนอก localhost โดยไม่มี login — ใครเข้าถึง host นี้ได้ ก็ลบข้อมูลได้');
   }
-  if (ALLOWED_ORIGINS.length && !authOn) {
-    warnings.push('ตั้ง ASHER_ALLOWED_ORIGINS ไว้แต่ไม่มี auth — เท่ากับเปิดให้เว็บอื่นเรียก API ได้ฟรี');
-  }
-  if (publicBind && !TRUST_PROXY) {
-    warnings.push('อยู่หลัง reverse proxy (Hostinger/Nginx)? ตั้ง ASHER_TRUST_PROXY=1 ให้ rate limit นับ IP จริง');
+  if (ALLOWED_ORIGINS.length) {
+    warnings.push(`ยอมให้เรียกข้ามโดเมนจาก: ${ALLOWED_ORIGINS.join(', ')}`);
   }
   if (!SCRAPE_ENABLED) {
     warnings.push('ปิด /api/scrape อยู่ (ASHER_ENABLE_SCRAPE=0)');
   }
-  if (authMode() === 'users' && PASSWORD) {
-    warnings.push('มีผู้ใช้ใน users.json แล้ว แต่ยังตั้ง ASHER_PASSWORD อยู่ — ใช้เป็นรหัสฉุกเฉินได้ ถ้าไม่ต้องการให้ลบทิ้ง');
-  }
   return warnings;
 }
 
-/* ------------------------------- auth ------------------------------- */
-
-function safeEqual(a, b) {
-  // hash ก่อนเทียบ เพื่อให้ความยาวเท่ากันเสมอและไม่หลุด timing
-  const left = crypto.createHash('sha256').update(String(a)).digest();
-  const right = crypto.createHash('sha256').update(String(b)).digest();
-  return crypto.timingSafeEqual(left, right);
-}
-
-function b64url(buffer) {
-  return Buffer.from(buffer).toString('base64url');
-}
-
-function sign(payload) {
-  return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest();
-}
-
-/**
- * สร้างค่า cookie: <payload>.<hmac>
- * payload มี u = คนที่ login, pv = ลายเซ็นย่อของรหัสผ่านตอนนั้น
- * (เปลี่ยนรหัสผ่าน/ลบผู้ใช้ -> pv ไม่ตรง -> session เก่าใช้ไม่ได้ทันที)
- */
-function createSessionValue(identity) {
-  const payload = b64url(JSON.stringify({
-    u: identity.id,
-    k: identity.kind,
-    pv: identity.pv || '',
-    exp: Date.now() + SESSION_TTL_MS
-  }));
-  return `${payload}.${b64url(sign(payload))}`;
-}
-
-/** คืน identity ถ้า cookie ใช้ได้ ไม่ได้คืน null */
-function verifySessionValue(value) {
-  const raw = String(value || '');
-  const dot = raw.indexOf('.');
-  if (dot <= 0) return null;
-  const payload = raw.slice(0, dot);
-  const signature = raw.slice(dot + 1);
-
-  const expected = b64url(sign(payload));
-  if (signature.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
-
-  let data;
-  try {
-    data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-  } catch {
-    return null;
-  }
-  if (!(Number(data.exp) > Date.now())) return null;
-
-  if (data.k === 'user') {
-    // ผู้ใช้ต้องยังอยู่ในระบบ และรหัสผ่านต้องไม่ถูกเปลี่ยนหลังจากออก cookie ใบนี้
-    const user = users.find(data.u);
-    if (!user || users.passwordVersion(user) !== data.pv) return null;
-    return { id: user.email, kind: 'user' };
-  }
-  if (data.k === 'admin') {
-    if (!PASSWORD) return null;
-    return { id: data.u || ADMIN_ID, kind: 'admin' };
-  }
-  return null;
-}
-
-function parseCookies(header) {
-  const out = {};
-  for (const part of String(header || '').split(';')) {
-    const index = part.indexOf('=');
-    if (index === -1) continue;
-    out[part.slice(0, index).trim()] = part.slice(index + 1).trim();
-  }
-  return out;
-}
-
-function bearerToken(req) {
-  const auth = String(req.headers.authorization || '');
-  const match = auth.match(/^Bearer\s+(.+)$/i);
-  if (match) return match[1].trim();
-  const header = req.headers['x-asher-token'];
-  return header ? String(header).trim() : '';
-}
-
-/**
- * ตรวจ email + รหัสผ่านตอน login — คืน identity ถ้าผ่าน ไม่ผ่านคืน null
- * ไม่ใส่อีเมลมา = พยายาม login ด้วย ASHER_PASSWORD (โหมดรหัสผ่านเดียว / รหัสฉุกเฉิน)
- */
-function login(email, password) {
-  const value = String(password || '');
-  if (!value) return null;
-
-  const wanted = users.normalizeEmail(email);
-  if (wanted) {
-    const user = users.authenticate(wanted, value);
-    if (user) return { id: user.email, kind: 'user', pv: users.passwordVersion(user) };
-    // อีเมลที่ตรงกับ ADMIN_ID ใช้คู่กับ ASHER_PASSWORD ได้ เผื่อกรณีถูกล็อกออกจากระบบ
-    if (wanted !== ADMIN_ID) return null;
-  }
-
-  if (PASSWORD && safeEqual(value, PASSWORD)) return { id: ADMIN_ID, kind: 'admin' };
-  // ยอมให้ใช้ token แทนรหัสผ่านได้ เผื่อ deploy แบบตั้งแต่ token อย่างเดียว
-  if (TOKEN && safeEqual(value, TOKEN)) return { id: ADMIN_ID, kind: 'admin' };
-  return null;
-}
-
-/** คืน identity ของคนที่ยิง request มา ไม่ผ่าน auth คืน null */
-function authenticate(req) {
-  if (!authRequired()) return { id: 'local', kind: 'local' };
-
-  const token = bearerToken(req);
-  if (token) {
-    if (TOKEN && safeEqual(token, TOKEN)) return { id: 'api-token', kind: 'token' };
-    if (PASSWORD && safeEqual(token, PASSWORD)) return { id: ADMIN_ID, kind: 'admin' };
-  }
-
-  const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  return cookie ? verifySessionValue(cookie) : null;
-}
-
-function isAuthenticated(req) {
-  return Boolean(authenticate(req));
-}
+/* ------------------------------ CORS / CSRF ------------------------------ */
 
 function isSecureRequest(req) {
-  if (flag('ASHER_COOKIE_SECURE', false)) return true;
   if (req.socket && req.socket.encrypted) return true;
   if (!TRUST_PROXY) return false;
   return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
 }
-
-function sessionCookie(req, value) {
-  const parts = [
-    `${SESSION_COOKIE}=${value || ''}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    value ? `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` : 'Max-Age=0'
-  ];
-  if (isSecureRequest(req)) parts.push('Secure');
-  return parts.join('; ');
-}
-
-/* ------------------------------ CORS / CSRF ------------------------------ */
 
 function requestOrigin(req) {
   const host = req.headers.host;
@@ -289,7 +95,7 @@ function isAllowedOrigin(req, origin) {
 
 /**
  * header CORS: default = ไม่ส่งอะไรเลย (same-origin เท่านั้น)
- * จะส่งก็ต่อเมื่อ origin นั้นอยู่ใน ASHER_ALLOWED_ORIGINS — ห้ามใช้ * คู่กับ auth เด็ดขาด
+ * ของเดิมเคยส่ง * ซึ่งแปลว่าเว็บไหนก็สั่ง API ที่รันอยู่บนเครื่องเราได้ ตอนเปิดเว็บนั้นค้างไว้
  */
 function corsHeaders(req) {
   const origin = req.headers.origin;
@@ -299,14 +105,13 @@ function corsHeaders(req) {
   return {
     vary: 'Origin',
     'access-control-allow-origin': value,
-    'access-control-allow-credentials': 'true',
-    'access-control-allow-headers': 'content-type, authorization, x-asher-token',
+    'access-control-allow-headers': 'content-type',
     'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'access-control-max-age': '600'
   };
 }
 
-/** กัน CSRF: request ที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเองหรือ origin ที่อนุญาตไว้ */
+/** request ที่เปลี่ยนข้อมูลต้องมาจาก origin ของเราเองหรือ origin ที่อนุญาตไว้ */
 function isSafeStateChange(req) {
   return isAllowedOrigin(req, req.headers.origin);
 }
@@ -348,11 +153,8 @@ const MAX_BUCKETS = 5000;
 
 /**
  * IP ของคนที่ยิงเข้ามา
- *
- * X-Forwarded-For เป็นรายการที่ต่อกันไปเรื่อย ๆ ฝั่งซ้ายคือค่าที่ "ผู้ยิงใส่มาเอง"
- * ปลอมได้ทั้งหมด ถ้าอ่านตัวซ้ายสุดแบบตรงไปตรงมา bot จะสุ่ม header หลบ rate limit ได้ฟรี
- * ตัวที่เชื่อได้คือตัวที่ proxy ของเราต่อท้ายไว้ — เลยนับจากขวาตามจำนวน proxy จริง
- * (Hostinger/Nginx ชั้นเดียว = 1, มี Cloudflare คั่นอีกชั้น = 2)
+ * X-Forwarded-For ฝั่งซ้ายคือค่าที่ผู้ยิงใส่มาเอง ปลอมได้ — ตัวที่เชื่อได้คือตัวที่
+ * proxy ของเราต่อท้ายไว้ เลยนับจากขวาตามจำนวน proxy จริง
  */
 function clientIp(req) {
   if (TRUST_PROXY) {
@@ -365,10 +167,7 @@ function clientIp(req) {
   return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 
-/**
- * fixed window แบบง่าย ๆ เก็บใน memory
- * พอสำหรับ instance เดียวบน Hostinger — ถ้ารันหลาย instance ต้องกัน rate ที่ proxy อีกชั้น
- */
+/** fixed window แบบง่าย ๆ เก็บใน memory — กันสคริปต์หลุดยิงรัวจนไฟล์ข้อมูลพัง */
 function rateLimit(key, limit, windowMs) {
   const now = Date.now();
   if (buckets.size > MAX_BUCKETS) {
@@ -390,33 +189,17 @@ function rateLimit(key, limit, windowMs) {
   return { ok: true, remaining: limit - bucket.count };
 }
 
-/** ล้างตัวนับของ key นั้นทิ้ง (ใช้ตอน login สำเร็จ) */
-function resetLimit(key) {
-  buckets.delete(key);
-}
-
 module.exports = {
-  ADMIN_ID,
   SCRAPE_ENABLED,
   TRUST_PROXY,
-  SESSION_COOKIE,
-  SESSION_HOURS,
-  ALLOWED_ORIGINS,
   PROXY_HOPS,
+  ALLOWED_ORIGINS,
   assertSafeConfig,
-  authMode,
-  authRequired,
   isLoopbackHost,
-  authenticate,
-  isAuthenticated,
-  login,
-  createSessionValue,
-  sessionCookie,
   corsHeaders,
   isAllowedOrigin,
   isSafeStateChange,
   securityHeaders,
   clientIp,
-  rateLimit,
-  resetLimit
+  rateLimit
 };
